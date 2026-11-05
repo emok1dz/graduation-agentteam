@@ -1,0 +1,133 @@
+@startuml 在线考试系统用例图
+title 在线考试系统 用例图
+left to right direction
+skinparam packageStyle rectangle
+skinparam actorStyle awesome
+
+actor "管理员" as Admin
+actor "教师" as Teacher
+actor "学生" as Student
+actor "系统定时器" as Timer <<system>>
+
+rectangle "在线考试系统" {
+  package "认证与会话" {
+    usecase "登录\n(FR-AUTH-01)" as UC_Login
+    usecase "退出登录/会话校验\n(FR-AUTH-02)" as UC_Logout
+    usecase "修改本人密码\n(FR-AUTH-03)" as UC_Pwd
+  }
+  package "用户与班级管理" {
+    usecase "查询用户\n(FR-USER-01)" as UC_UserList
+    usecase "新增用户\n(FR-USER-02)" as UC_UserAdd
+    usecase "编辑/禁用/重置密码/删除用户\n(FR-USER-03)" as UC_UserEdit
+    usecase "班级增删改查\n(FR-CLASS-01)" as UC_Class
+    usecase "班级成员管理\n(FR-CLASS-02)" as UC_ClassMember
+    usecase "系统数据概览\n(FR-STAT-06)" as UC_Overview
+  }
+  package "题库管理" {
+    usecase "新增题目\n(FR-QB-01)" as UC_QAdd
+    usecase "编辑/删除题目\n(FR-QB-02)" as UC_QEdit
+    usecase "检索筛选题目\n(FR-QB-03)" as UC_QSearch
+    usecase "知识点标签管理\n(FR-QB-04)" as UC_Tag
+    usecase "批量导入题目\n(FR-QB-05)" as UC_QImport
+  }
+  package "组卷与考试" {
+    usecase "手动组卷\n(FR-PAPER-01)" as UC_PManual
+    usecase "随机抽题组卷\n(FR-PAPER-02)" as UC_PRandom
+    usecase "试卷管理与预览\n(FR-PAPER-03)" as UC_PManage
+    usecase "发布考试\n(FR-EXAM-01)" as UC_ExamPub
+    usecase "考试管理与作答监控\n(FR-EXAM-02)" as UC_ExamManage
+  }
+  package "在线答题" {
+    usecase "查看我的考试\n(FR-EXAM-03)" as UC_MyExam
+    usecase "开始/继续作答\n(FR-ANS-01)" as UC_Start
+    usecase "答题与倒计时\n(FR-ANS-02)" as UC_Answer
+    usecase "自动保存答案\n(FR-ANS-03)" as UC_Save
+    usecase "手动交卷(防重复)\n(FR-ANS-04)" as UC_Submit
+    usecase "到时自动交卷\n(FR-ANS-05)" as UC_AutoSubmit
+  }
+  package "阅卷与成绩" {
+    usecase "客观题自动阅卷\n(FR-GRADE-01)" as UC_AutoGrade
+    usecase "简答题人工批改\n(FR-GRADE-02)" as UC_ManualGrade
+    usecase "发布成绩\n(FR-GRADE-03)" as UC_Publish
+    usecase "查询成绩与答卷回顾\n(FR-STAT-01)" as UC_MyScore
+    usecase "查看成绩单\n(FR-STAT-02)" as UC_ScoreList
+    usecase "概要统计\n(FR-STAT-03)" as UC_Stat
+    usecase "分数段分布\n(FR-STAT-04)" as UC_Dist
+    usecase "每题正确率分析\n(FR-STAT-05)" as UC_QRate
+    usecase "导出成绩\n(FR-STAT-06)" as UC_Export
+  }
+}
+
+' 公共用例
+Admin --> UC_Login
+Teacher --> UC_Login
+Student --> UC_Login
+Admin --> UC_Logout
+Teacher --> UC_Logout
+Student --> UC_Logout
+Admin --> UC_Pwd
+Teacher --> UC_Pwd
+Student --> UC_Pwd
+
+' 管理员
+Admin --> UC_UserList
+Admin --> UC_UserAdd
+Admin --> UC_UserEdit
+Admin --> UC_Class
+Admin --> UC_ClassMember
+Admin --> UC_Overview
+Admin --> UC_ScoreList
+Admin --> UC_Stat
+
+' 教师
+Teacher --> UC_QAdd
+Teacher --> UC_QEdit
+Teacher --> UC_QSearch
+Teacher --> UC_Tag
+Teacher --> UC_QImport
+Teacher --> UC_PManual
+Teacher --> UC_PRandom
+Teacher --> UC_PManage
+Teacher --> UC_ExamPub
+Teacher --> UC_ExamManage
+Teacher --> UC_ManualGrade
+Teacher --> UC_Publish
+Teacher --> UC_ScoreList
+Teacher --> UC_Stat
+Teacher --> UC_Export
+
+' 学生
+Student --> UC_MyExam
+Student --> UC_Start
+Student --> UC_Answer
+Student --> UC_Submit
+Student --> UC_MyScore
+
+' 系统
+Timer --> UC_AutoSubmit
+
+' 关系
+UC_Start ..> UC_Login : <<include>>
+UC_Answer ..> UC_Save : <<include>>
+UC_AutoSubmit .> UC_Answer : <<extend>>
+UC_Submit ..> UC_AutoGrade : <<include>>
+UC_AutoSubmit ..> UC_AutoGrade : <<include>>
+UC_PRandom ..> UC_QSearch : <<include>>
+UC_PManual ..> UC_QSearch : <<include>>
+UC_ExamPub ..> UC_PManage : <<include>>
+UC_QAdd <.. UC_Tag : <<extend>>
+UC_Stat <.. UC_Dist : <<extend>>
+UC_Stat <.. UC_QRate : <<extend>>
+UC_ScoreList <.. UC_Export : <<extend>>
+
+note right of UC_Submit
+  服务端以答卷状态做幂等：
+  仅"作答中"可交卷，
+  重复提交不修改数据
+end note
+note right of UC_AutoSubmit
+  前端倒计时归零自动提交；
+  学生离线时由服务端
+  在截止后兜底强制交卷
+end note
+@enduml
