@@ -1,0 +1,2960 @@
+openapi: 3.0.3
+info:
+  title: 在线考试系统 API 契约
+  version: 1.0.0
+  description: |
+    前后端唯一接口依据（系统架构师产出）。
+
+    ## 通用约定
+    - 基础路径：所有接口以 `/api` 开头；静态前端由同一端口的 `/` 提供。
+    - 编码：请求与响应均为 `application/json; charset=utf-8`（导出接口为 `text/csv`）。请求体上限 1MB，超过返回 413/41300。
+    - 字段命名：统一 snake_case。时间：统一 ISO8601 UTC 字符串（`Date.prototype.toISOString()`，如 `2026-11-05T08:00:00.000Z`）。ID：正整数。
+    - 分数：number，最多 1 位小数；平均分保留 2 位小数；百分比（pass_rate / correct_rate / score_rate / ratio）为 0~100 的 number，保留 1 位小数。
+    - 鉴权：除 `POST /api/auth/login` 外均需请求头 `Authorization: Bearer <token>`。令牌空闲 2 小时过期（滑动续期）。
+    - 角色：`admin` 管理员 / `teacher` 教师 / `student` 学生。每个接口的 `x-roles` 列出允许的角色；角色不符返回 403/40300；资源归属不符返回 403/40301。
+    - 统一响应：`{ "code": 0, "message": "ok", "data": ... }`；失败时 `code` 为业务码（见 `x-error-codes` 与系统设计文档 §10），`data` 为 null 或错误详情。
+    - 分页：查询参数 `page`（默认 1，≥1）与 `page_size`（默认 10，1~100）；分页响应 `data = { items, total, page, page_size }`。
+    - 枚举：
+      - 题型 `type`：single 单选 / multiple 多选 / judge 判断 / fill 填空 / essay 简答
+      - 难度 `difficulty`：easy / medium / hard
+      - 用户状态 `status`：active / disabled
+      - 考试状态 `status`（服务端按时间计算）：not_started / ongoing / ended / cancelled
+      - 答卷状态 `submission.status`（持久化值）：in_progress 作答中 / pending_review 待批改 / graded 已批改
+      - 交卷方式 `submit_type`：manual 手动 / auto 前端到时自动 / forced 服务端超时强制 / absent 缺考
+    - 标准答案 `answer` 与学生作答 `response` 的形状随题型变化：
+      | type | answer（标准答案） | response（学生作答） |
+      | --- | --- | --- |
+      | single | `"A"` | `"A"` |
+      | multiple | `["A","C"]`（≥2 个，升序） | `["A","C"]` |
+      | judge | `true` / `false` | `true` / `false` |
+      | fill | `[["北京","Beijing"],["1949"]]` 每空一组可接受答案 | `["北京","1949"]`，长度 = blank_count |
+      | essay | `"参考答案"` 或 null | `"作答文本"`（≤2000 字） |
+      未作答的 response 为 null。
+    - 可选（P1/P2）接口在 summary 中以【可选】标注，并带 `x-optional: true`。
+servers:
+  - url: http://localhost:3000
+tags:
+  - name: auth
+    description: 认证与会话（FR-AUTH）
+  - name: users
+    description: 用户管理（FR-USER）
+  - name: classes
+    description: 班级管理（FR-CLASS）
+  - name: tags
+    description: 知识点标签（FR-QB-04）
+  - name: questions
+    description: 题库（FR-QB）
+  - name: papers
+    description: 组卷与试卷（FR-PAPER）
+  - name: exams
+    description: 考试发布与管理（FR-EXAM-01/02）
+  - name: student
+    description: 学生端考试与成绩（FR-EXAM-03、FR-ANS-01、FR-STAT-01）
+  - name: submissions
+    description: 答卷作答、交卷、批改（FR-ANS、FR-GRADE）
+  - name: grading
+    description: 阅卷与成绩发布（FR-GRADE）
+  - name: stats
+    description: 成绩单与统计（FR-STAT）
+  - name: admin
+    description: 系统概览（FR-STAT-06）
+security:
+  - bearerAuth: []
+
+paths:
+  # ===================== AUTH =====================
+  /api/auth/login:
+    post:
+      tags: [auth]
+      operationId: login
+      summary: 登录（FR-AUTH-01）
+      description: |
+        账号不存在或密码错误统一返回 40101；连续 5 次密码错误锁定 10 分钟（42900）；被禁用返回 40302。
+      security: []
+      x-roles: [public]
+      x-error-codes: [40000, 40001, 40101, 40302, 42900]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/LoginRequest' }
+      responses:
+        '200':
+          description: 登录成功
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/LoginResult' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+  /api/auth/logout:
+    post:
+      tags: [auth]
+      operationId: logout
+      summary: 退出登录（FR-AUTH-02）
+      description: 立即使当前令牌失效。
+      x-roles: [admin, teacher, student]
+      x-error-codes: [40100]
+      responses:
+        '200': { $ref: '#/components/responses/OkNull' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+  /api/auth/me:
+    get:
+      tags: [auth]
+      operationId: getMe
+      summary: 获取当前用户（刷新后恢复登录态，FR-AUTH-02）
+      x-roles: [admin, teacher, student]
+      x-error-codes: [40100]
+      responses:
+        '200':
+          description: 当前用户
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/User' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+  /api/auth/password:
+    put:
+      tags: [auth]
+      operationId: changePassword
+      summary: 修改本人密码（FR-AUTH-03，P1）
+      description: |
+        校验原密码（错误返回 40003）；新密码 6~32 位且同时含字母与数字、两次一致、不得与原密码相同（否则 40000）。
+        成功后该用户除当前会话外的其他会话全部失效。
+      x-roles: [admin, teacher, student]
+      x-error-codes: [40000, 40003, 40100]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ChangePasswordRequest' }
+      responses:
+        '200': { $ref: '#/components/responses/OkNull' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  # ===================== USERS =====================
+  /api/users:
+    get:
+      tags: [users]
+      operationId: listUsers
+      summary: 用户列表（FR-USER-01）
+      description: 按 created_at 倒序分页。响应永不包含密码哈希与盐。
+      x-roles: [admin]
+      x-error-codes: [40000, 40100, 40300]
+      parameters:
+        - name: role
+          in: query
+          schema: { $ref: '#/components/schemas/Role' }
+        - name: class_id
+          in: query
+          schema: { type: integer }
+        - name: status
+          in: query
+          schema: { $ref: '#/components/schemas/UserStatus' }
+        - name: keyword
+          in: query
+          description: 账号或姓名模糊匹配（不区分大小写）
+          schema: { type: string, maxLength: 50 }
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PageSize'
+      responses:
+        '200':
+          description: 分页用户列表
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data:
+                        allOf:
+                          - $ref: '#/components/schemas/PageMeta'
+                          - type: object
+                            properties:
+                              items:
+                                type: array
+                                items: { $ref: '#/components/schemas/User' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+    post:
+      tags: [users]
+      operationId: createUser
+      summary: 新增用户（FR-USER-02）
+      description: |
+        username 4~20 位 `[A-Za-z0-9_]` 且唯一（重复 40900）；name 1~20 字；role=student 时 class_id 必填且班级存在；
+        password 留空则使用配置的默认初始密码（config.DEFAULT_PASSWORD）；填写时须满足 6~32 位字母+数字。
+      x-roles: [admin]
+      x-error-codes: [40000, 40100, 40300, 40400, 40900]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/UserCreateRequest' }
+      responses:
+        '201':
+          description: 创建成功
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/User' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /api/users/{id}:
+    parameters:
+      - $ref: '#/components/parameters/IdPath'
+    get:
+      tags: [users]
+      operationId: getUser
+      summary: 用户详情
+      x-roles: [admin]
+      x-error-codes: [40100, 40300, 40400]
+      responses:
+        '200':
+          description: 用户
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/User' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    put:
+      tags: [users]
+      operationId: updateUser
+      summary: 编辑 / 禁用 / 启用用户（FR-USER-03）
+      description: |
+        仅可修改 name、class_id（仅学生）、status；username 与 role 不可改（出现即忽略）。
+        status 改为 disabled 时立即删除该用户全部会话；管理员不能禁用自己（40303）。
+      x-roles: [admin]
+      x-error-codes: [40000, 40100, 40300, 40303, 40400]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/UserUpdateRequest' }
+      responses:
+        '200':
+          description: 更新后的用户
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/User' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    delete:
+      tags: [users]
+      operationId: deleteUser
+      summary: 【可选】删除用户（FR-USER-03 P1）
+      description: |
+        已产生答卷的学生、已创建题目或考试的教师不允许删除（40901，只能禁用）；不能删除自己（40303）。
+        删除时级联删除其会话与任课关系。
+      x-optional: true
+      x-roles: [admin]
+      x-error-codes: [40100, 40300, 40303, 40400, 40901]
+      responses:
+        '200': { $ref: '#/components/responses/OkNull' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /api/users/{id}/reset-password:
+    parameters:
+      - $ref: '#/components/parameters/IdPath'
+    post:
+      tags: [users]
+      operationId: resetUserPassword
+      summary: 重置密码为默认初始密码（FR-USER-03）
+      description: 密码重置为 config.DEFAULT_PASSWORD，清除登录锁定，并删除该用户全部会话。响应不回传密码。
+      x-roles: [admin]
+      x-error-codes: [40100, 40300, 40400]
+      responses:
+        '200': { $ref: '#/components/responses/OkNull' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  # ===================== CLASSES =====================
+  /api/classes:
+    get:
+      tags: [classes]
+      operationId: listClasses
+      summary: 班级列表（FR-CLASS-01）
+      description: |
+        admin：全部班级；teacher：本人任课班级；student：本人所在班级（0 或 1 条）。按 name 升序分页。
+      x-roles: [admin, teacher, student]
+      x-error-codes: [40000, 40100]
+      parameters:
+        - name: keyword
+          in: query
+          description: 班级名称/专业模糊匹配
+          schema: { type: string, maxLength: 50 }
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PageSize'
+      responses:
+        '200':
+          description: 分页班级列表
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data:
+                        allOf:
+                          - $ref: '#/components/schemas/PageMeta'
+                          - type: object
+                            properties:
+                              items:
+                                type: array
+                                items: { $ref: '#/components/schemas/ClassInfo' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+    post:
+      tags: [classes]
+      operationId: createClass
+      summary: 新增班级（FR-CLASS-01）
+      description: name 全局唯一（重复 40900）。
+      x-roles: [admin]
+      x-error-codes: [40000, 40100, 40300, 40900]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ClassInput' }
+      responses:
+        '201':
+          description: 创建成功
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/ClassInfo' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /api/classes/{id}:
+    parameters:
+      - $ref: '#/components/parameters/IdPath'
+    get:
+      tags: [classes]
+      operationId: getClass
+      summary: 班级详情
+      description: admin 任意；teacher 仅任课班级；student 仅本人班级；否则 40301。
+      x-roles: [admin, teacher, student]
+      x-error-codes: [40100, 40301, 40400]
+      responses:
+        '200':
+          description: 班级
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/ClassInfo' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    put:
+      tags: [classes]
+      operationId: updateClass
+      summary: 编辑班级（FR-CLASS-01）
+      x-roles: [admin]
+      x-error-codes: [40000, 40100, 40300, 40400, 40900]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ClassInput' }
+      responses:
+        '200':
+          description: 更新后的班级
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/ClassInfo' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+    delete:
+      tags: [classes]
+      operationId: deleteClass
+      summary: 删除班级（FR-CLASS-01）
+      description: 班级下仍有学生或存在关联考试时返回 40901。删除时同时删除任课关系。
+      x-roles: [admin]
+      x-error-codes: [40100, 40300, 40400, 40901]
+      responses:
+        '200': { $ref: '#/components/responses/OkNull' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /api/classes/{id}/members:
+    parameters:
+      - $ref: '#/components/parameters/IdPath'
+    get:
+      tags: [classes]
+      operationId: getClassMembers
+      summary: 班级成员（学生名单与任课教师，FR-CLASS-02）
+      description: admin 任意班级；teacher 仅任课班级（只读）；否则 40301。学生按 username 升序。
+      x-roles: [admin, teacher]
+      x-error-codes: [40100, 40300, 40301, 40400]
+      responses:
+        '200':
+          description: 成员
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/ClassMembers' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /api/classes/{id}/students:
+    parameters:
+      - $ref: '#/components/parameters/IdPath'
+    post:
+      tags: [classes]
+      operationId: addClassStudents
+      summary: 将学生加入班级（FR-CLASS-02）
+      description: |
+        student_ids 必须均为学生账号（否则 40000）。若有学生已属于其他班级且 force_move=false，
+        整体不执行并返回 409/40909，data.conflicts 列出冲突学生，前端二次确认后以 force_move=true 重试。
+      x-roles: [admin]
+      x-error-codes: [40000, 40100, 40300, 40400, 40909]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AddStudentsRequest' }
+      responses:
+        '200':
+          description: 更新后的成员
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/ClassMembers' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: 学生已属于其他班级（40909）
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ErrorEnvelope'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/MoveConflictData' }
+  /api/classes/{id}/students/remove:
+    parameters:
+      - $ref: '#/components/parameters/IdPath'
+    post:
+      tags: [classes]
+      operationId: removeClassStudents
+      summary: 将学生移出班级（FR-CLASS-02）
+      description: 仅移出属于本班的学生，其 class_id 置为 null；不属于本班的 ID 忽略。
+      x-roles: [admin]
+      x-error-codes: [40000, 40100, 40300, 40400]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/StudentIdsRequest' }
+      responses:
+        '200':
+          description: 更新后的成员
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/ClassMembers' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /api/classes/{id}/teachers:
+    parameters:
+      - $ref: '#/components/parameters/IdPath'
+    put:
+      tags: [classes]
+      operationId: setClassTeachers
+      summary: 设置任课教师（整体替换，FR-CLASS-02）
+      description: teacher_ids 必须均为教师账号（否则 40000），可为空数组。
+      x-roles: [admin]
+      x-error-codes: [40000, 40100, 40300, 40400]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/TeacherIdsRequest' }
+      responses:
+        '200':
+          description: 更新后的成员
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/ClassMembers' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  # ===================== TAGS =====================
+  /api/tags:
+    get:
+      tags: [tags]
+      operationId: listTags
+      summary: 本人知识点标签列表（FR-QB-04）
+      description: 返回当前教师全部标签（不分页），按 name 升序，含关联题目数（不含已删除题目）。
+      x-roles: [teacher]
+      x-error-codes: [40100, 40300]
+      responses:
+        '200':
+          description: 标签数组
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items: { $ref: '#/components/schemas/Tag' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+    post:
+      tags: [tags]
+      operationId: createTag
+      summary: 【可选】新建标签（FR-QB-04 P1）
+      description: 同一教师下 name 唯一（40900）。录题时传入不存在的标签名也会自动创建。
+      x-optional: true
+      x-roles: [teacher]
+      x-error-codes: [40000, 40100, 40300, 40900]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/TagInput' }
+      responses:
+        '201':
+          description: 创建成功
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/Tag' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /api/tags/{id}:
+    parameters:
+      - $ref: '#/components/parameters/IdPath'
+    put:
+      tags: [tags]
+      operationId: renameTag
+      summary: 【可选】重命名标签（FR-QB-04 P1）
+      description: 关联题目通过 question_tags 自动体现新名称（已组试卷快照不变）。
+      x-optional: true
+      x-roles: [teacher]
+      x-error-codes: [40000, 40100, 40300, 40301, 40400, 40900]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/TagInput' }
+      responses:
+        '200':
+          description: 更新后的标签
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/Tag' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+    delete:
+      tags: [tags]
+      operationId: deleteTag
+      summary: 【可选】删除标签（FR-QB-04 P1）
+      description: 同时删除 question_tags 中的关联，不删除题目。
+      x-optional: true
+      x-roles: [teacher]
+      x-error-codes: [40100, 40300, 40301, 40400]
+      responses:
+        '200': { $ref: '#/components/responses/OkNull' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  # ===================== QUESTIONS =====================
+  /api/questions:
+    get:
+      tags: [questions]
+      operationId: listQuestions
+      summary: 本人题库检索（FR-QB-03）
+      description: |
+        仅当前教师的未删除题目；按 created_at 倒序分页。
+        summary 为“当前筛选条件下（忽略分页）”按题型、难度的数量汇总。
+      x-roles: [teacher]
+      x-error-codes: [40000, 40100, 40300]
+      parameters:
+        - name: type
+          in: query
+          schema: { $ref: '#/components/schemas/QuestionType' }
+        - name: difficulty
+          in: query
+          schema: { $ref: '#/components/schemas/Difficulty' }
+        - name: tags
+          in: query
+          description: 标签名，逗号分隔，命中任一即可
+          schema: { type: string, example: '数组,链表' }
+        - name: keyword
+          in: query
+          description: 题干关键字
+          schema: { type: string, maxLength: 50 }
+        - name: exclude_ids
+          in: query
+          description: 逗号分隔的题目 ID，结果中排除（组卷选题时排除已选）
+          schema: { type: string, example: '3,7' }
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PageSize'
+      responses:
+        '200':
+          description: 分页题目列表
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/QuestionPage' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+    post:
+      tags: [questions]
+      operationId: createQuestion
+      summary: 新增题目（FR-QB-01）
+      description: 按题型结构校验（规则见 QuestionInput）；tags 中不存在的标签名自动创建。
+      x-roles: [teacher]
+      x-error-codes: [40000, 40100, 40300]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/QuestionInput' }
+      responses:
+        '201':
+          description: 创建成功
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/Question' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+  /api/questions/import:
+    post:
+      tags: [questions]
+      operationId: importQuestions
+      summary: 【可选】批量导入题目（FR-QB-05 P2）
+      description: 逐条按 QuestionInput 校验，通过的导入、失败的记录下标与原因；单次最多 200 题（超出 40000）。
+      x-optional: true
+      x-roles: [teacher]
+      x-error-codes: [40000, 40100, 40300]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ImportQuestionsRequest' }
+      responses:
+        '200':
+          description: 导入结果
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/ImportResult' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+  /api/questions/{id}:
+    parameters:
+      - $ref: '#/components/parameters/IdPath'
+    get:
+      tags: [questions]
+      operationId: getQuestion
+      summary: 题目详情
+      description: 非本人题目 40301；已逻辑删除视为 40400。
+      x-roles: [teacher]
+      x-error-codes: [40100, 40300, 40301, 40400]
+      responses:
+        '200':
+          description: 题目
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/Question' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    put:
+      tags: [questions]
+      operationId: updateQuestion
+      summary: 编辑题目（FR-QB-02）
+      description: 全量替换（body 同 QuestionInput）。已组试卷保留快照，不受影响。
+      x-roles: [teacher]
+      x-error-codes: [40000, 40100, 40300, 40301, 40400]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/QuestionInput' }
+      responses:
+        '200':
+          description: 更新后的题目
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/Question' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    delete:
+      tags: [questions]
+      operationId: deleteQuestion
+      summary: 删除题目（逻辑删除，FR-QB-02）
+      description: |
+        统一执行逻辑删除（设置 deleted_at），之后不再出现在题库与选题列表中；试卷快照不受影响。
+        前端在确认框中依据 Question.ref_count 提示“该题已被 N 份试卷引用”。
+      x-roles: [teacher]
+      x-error-codes: [40100, 40300, 40301, 40400]
+      responses:
+        '200':
+          description: 删除成功
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        required: [id, ref_count]
+                        properties:
+                          id: { type: integer }
+                          ref_count: { type: integer, description: 被试卷引用次数 }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  # ===================== PAPERS =====================
+  /api/papers:
+    get:
+      tags: [papers]
+      operationId: listPapers
+      summary: 本人试卷列表（FR-PAPER-03）
+      description: 按 created_at 倒序分页。
+      x-roles: [teacher]
+      x-error-codes: [40000, 40100, 40300]
+      parameters:
+        - name: keyword
+          in: query
+          description: 试卷名称模糊匹配
+          schema: { type: string, maxLength: 50 }
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PageSize'
+      responses:
+        '200':
+          description: 分页试卷列表
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data:
+                        allOf:
+                          - $ref: '#/components/schemas/PageMeta'
+                          - type: object
+                            properties:
+                              items:
+                                type: array
+                                items: { $ref: '#/components/schemas/PaperSummary' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+    post:
+      tags: [papers]
+      operationId: createPaper
+      summary: 保存试卷（手动组卷 / 随机组卷确认后保存，FR-PAPER-01/02）
+      description: |
+        items 至少 1 项，question_id 不得重复，题目须为本人未删除题目（否则 40000，errors 指明下标；非本人 40301）。
+        服务端按题型分组 single→multiple→judge→fill→essay 稳定排序（组内保持请求顺序），重新编号 seq（从 1 开始），
+        并把题目内容（题干、选项、答案、解析、难度、标签名、分值）以快照写入 paper_questions。
+      x-roles: [teacher]
+      x-error-codes: [40000, 40100, 40300, 40301]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/PaperInput' }
+      responses:
+        '201':
+          description: 创建成功
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/PaperDetail' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+  /api/papers/random/generate:
+    post:
+      tags: [papers]
+      operationId: generateRandomPaper
+      summary: 随机抽题生成草稿（不落库，FR-PAPER-02）
+      description: |
+        对每条规则从“满足条件、未删除、未被前序规则抽中”的本人题目中无放回随机抽取 count 道。
+        任一规则不足则整体失败 422/42200，data.shortages 给出每条不足规则，message 形如“单选题（难度：简单）仅有 3 道，需 5 道”。
+        返回草稿供前端编辑（替换、删除、追加），最终通过 POST /api/papers 保存。
+      x-roles: [teacher]
+      x-error-codes: [40000, 40100, 40300, 42200]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/RandomGenerateRequest' }
+      responses:
+        '200':
+          description: 草稿
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/RandomDraft' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '422': { $ref: '#/components/responses/Insufficient' }
+  /api/papers/random/replace:
+    post:
+      tags: [papers]
+      operationId: replaceRandomQuestion
+      summary: 随机替换单题（FR-PAPER-02）
+      description: 从同条件、未删除、且不在 exclude_question_ids 中的本人题目里随机返回 1 道；无可用题目 422/42200。
+      x-roles: [teacher]
+      x-error-codes: [40000, 40100, 40300, 42200]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/RandomReplaceRequest' }
+      responses:
+        '200':
+          description: 替换题目
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/Question' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '422': { $ref: '#/components/responses/Insufficient' }
+  /api/papers/{id}:
+    parameters:
+      - $ref: '#/components/parameters/IdPath'
+    get:
+      tags: [papers]
+      operationId: getPaper
+      summary: 试卷详情 / 预览（FR-PAPER-03）
+      description: 返回快照题目（含答案与解析，前端预览可切换是否显示）。非本人 40301。
+      x-roles: [teacher]
+      x-error-codes: [40100, 40300, 40301, 40400]
+      responses:
+        '200':
+          description: 试卷详情
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/PaperDetail' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    put:
+      tags: [papers]
+      operationId: updatePaper
+      summary: 编辑试卷（FR-PAPER-03）
+      description: |
+        已被任何考试（含已取消）引用时 409/40903。body 同 PaperInput（全量替换）：
+        已在本试卷中的 question_id 沿用原快照，仅更新分值与顺序；新增 question_id 从题库取最新内容生成快照。
+      x-roles: [teacher]
+      x-error-codes: [40000, 40100, 40300, 40301, 40400, 40903]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/PaperInput' }
+      responses:
+        '200':
+          description: 更新后的试卷
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/PaperDetail' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+    delete:
+      tags: [papers]
+      operationId: deletePaper
+      summary: 删除试卷（FR-PAPER-03）
+      description: 已被考试引用时 409/40903；否则物理删除试卷及其 paper_questions。
+      x-roles: [teacher]
+      x-error-codes: [40100, 40300, 40301, 40400, 40903]
+      responses:
+        '200': { $ref: '#/components/responses/OkNull' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /api/papers/{id}/copy:
+    parameters:
+      - $ref: '#/components/parameters/IdPath'
+    post:
+      tags: [papers]
+      operationId: copyPaper
+      summary: 【可选】复制为新试卷（FR-PAPER-03 P1）
+      description: 完整复制快照题目为一份未锁定的新试卷；title 缺省为“原名称（副本）”。
+      x-optional: true
+      x-roles: [teacher]
+      x-error-codes: [40000, 40100, 40300, 40301, 40400]
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                title: { type: string, minLength: 1, maxLength: 100 }
+      responses:
+        '201':
+          description: 新试卷
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/PaperDetail' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  # ===================== EXAMS =====================
+  /api/exams:
+    get:
+      tags: [exams]
+      operationId: listExams
+      summary: 考试列表（FR-EXAM-02）
+      description: teacher：本人发布的考试；admin：全部（只读）。按 start_time 倒序分页。每项含 counts 统计。
+      x-roles: [teacher, admin]
+      x-error-codes: [40000, 40100, 40300]
+      parameters:
+        - name: status
+          in: query
+          schema: { $ref: '#/components/schemas/ExamStatus' }
+        - name: keyword
+          in: query
+          description: 考试名称模糊匹配
+          schema: { type: string, maxLength: 50 }
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PageSize'
+      responses:
+        '200':
+          description: 分页考试列表
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data:
+                        allOf:
+                          - $ref: '#/components/schemas/PageMeta'
+                          - type: object
+                            properties:
+                              items:
+                                type: array
+                                items: { $ref: '#/components/schemas/Exam' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+    post:
+      tags: [exams]
+      operationId: createExam
+      summary: 发布考试（FR-EXAM-01）
+      description: |
+        校验：end_time > start_time > 当前时间；1 ≤ duration_minutes ≤ (end_time - start_time) 分钟；
+        0 ≤ pass_score ≤ 试卷总分（缺省为总分 × 60%，保留 1 位小数）；paper_id 须为本人试卷（40301）；
+        class_ids 非空且均为本人任课班级（40301）。发布后试卷锁定。
+      x-roles: [teacher]
+      x-error-codes: [40000, 40100, 40300, 40301, 40400]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ExamInput' }
+      responses:
+        '201':
+          description: 发布成功
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/Exam' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /api/exams/{id}:
+    parameters:
+      - $ref: '#/components/parameters/IdPath'
+    get:
+      tags: [exams]
+      operationId: getExam
+      summary: 考试详情
+      description: teacher 仅本人考试（40301）；admin 任意。
+      x-roles: [teacher, admin]
+      x-error-codes: [40100, 40300, 40301, 40400]
+      responses:
+        '200':
+          description: 考试
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/Exam' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    put:
+      tags: [exams]
+      operationId: updateExam
+      summary: 【可选】修改 / 延长考试（FR-EXAM-02 P1）
+      description: |
+        not_started：可修改 ExamUpdateRequest 中任意字段（校验同发布）；
+        ongoing：仅允许 end_time 且须晚于原 end_time，其他字段出现即 40902；作答中答卷的 deadline_at 按
+        min(started_at + duration, 新 end_time) 重新计算；
+        ended / cancelled：40902。
+      x-optional: true
+      x-roles: [teacher]
+      x-error-codes: [40000, 40100, 40300, 40301, 40400, 40902]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ExamUpdateRequest' }
+      responses:
+        '200':
+          description: 更新后的考试
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/Exam' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /api/exams/{id}/cancel:
+    parameters:
+      - $ref: '#/components/parameters/IdPath'
+    post:
+      tags: [exams]
+      operationId: cancelExam
+      summary: 取消考试（FR-EXAM-02）
+      description: 仅 not_started 可取消，否则 40902。取消后学生不可见。
+      x-roles: [teacher]
+      x-error-codes: [40100, 40300, 40301, 40400, 40902]
+      responses:
+        '200':
+          description: 已取消的考试
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/Exam' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /api/exams/{id}/monitor:
+    parameters:
+      - $ref: '#/components/parameters/IdPath'
+    get:
+      tags: [exams]
+      operationId: getExamMonitor
+      summary: 作答监控（FR-EXAM-02）
+      description: 列出参考班级全部学生的作答状态（调用前先执行该考试的超时兜底）。按 class_name、username 升序。
+      x-roles: [teacher]
+      x-error-codes: [40100, 40300, 40301, 40400]
+      responses:
+        '200':
+          description: 监控数据
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/ExamMonitor' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  # ===================== STUDENT =====================
+  /api/student/exams:
+    get:
+      tags: [student]
+      operationId: listStudentExams
+      summary: 我的考试（FR-EXAM-03）
+      description: |
+        仅本人班级、未取消的考试，按 start_time 倒序，不分页。
+        status 过滤：all（默认）/ not_started / available（含 available 与 in_progress）/ finished / missed。
+      x-roles: [student]
+      x-error-codes: [40000, 40100, 40300]
+      parameters:
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [all, not_started, available, finished, missed]
+            default: all
+      responses:
+        '200':
+          description: 考试卡片
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        required: [items, server_time]
+                        properties:
+                          server_time: { type: string, format: date-time }
+                          items:
+                            type: array
+                            items: { $ref: '#/components/schemas/StudentExam' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+  /api/student/exams/{id}:
+    parameters:
+      - $ref: '#/components/parameters/IdPath'
+    get:
+      tags: [student]
+      operationId: getStudentExam
+      summary: 考试须知（开始作答前确认页）
+      description: 非本班考试 40301；已取消视为 40400。
+      x-roles: [student]
+      x-error-codes: [40100, 40300, 40301, 40400]
+      responses:
+        '200':
+          description: 考试卡片
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data:
+                        allOf:
+                          - $ref: '#/components/schemas/StudentExam'
+                          - type: object
+                            properties:
+                              server_time: { type: string, format: date-time }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /api/student/exams/{id}/start:
+    parameters:
+      - $ref: '#/components/parameters/IdPath'
+    post:
+      tags: [student]
+      operationId: startExam
+      summary: 开始 / 继续作答（FR-ANS-01）
+      description: |
+        校验本班考试（40301）、未取消且 start_time ≤ now ≤ end_time（40905）、本人无已交卷答卷（40904）。
+        首次调用创建答卷：started_at = now，deadline_at = min(now + duration, end_time)，并为每道试题创建 response=null 的作答记录；
+        再次调用返回原答卷，不重置 started_at。若该答卷已超过 deadline_at + 10s，先强制交卷再返回 40904。
+        响应中题目不含 answer / analysis（NFR-08）。若 shuffle_options=true，选项顺序按答卷 ID 确定性打乱（key 不变）。
+      x-roles: [student]
+      x-error-codes: [40100, 40300, 40301, 40400, 40904, 40905]
+      responses:
+        '200':
+          description: 作答数据
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/AnswerSheet' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /api/student/results:
+    get:
+      tags: [student]
+      operationId: listStudentResults
+      summary: 我的成绩列表（FR-STAT-01）
+      description: 本人全部非作答中答卷（含缺考），按 submitted_at 倒序分页。成绩未发布时分数字段为 null。
+      x-roles: [student]
+      x-error-codes: [40000, 40100, 40300]
+      parameters:
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PageSize'
+      responses:
+        '200':
+          description: 分页成绩
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data:
+                        allOf:
+                          - $ref: '#/components/schemas/PageMeta'
+                          - type: object
+                            properties:
+                              items:
+                                type: array
+                                items: { $ref: '#/components/schemas/StudentResultItem' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+  /api/student/results/{exam_id}:
+    parameters:
+      - name: exam_id
+        in: path
+        required: true
+        schema: { type: integer, minimum: 1 }
+    get:
+      tags: [student]
+      operationId: getStudentResult
+      summary: 我的成绩详情与答卷回顾（FR-STAT-01）
+      description: |
+        本人在该考试无答卷时 40400。results_published=false 时只返回状态，分数为 null、questions 为空数组；
+        发布后返回分数；且 allow_review=true 时 questions 返回每题本人答案、正确答案、得分、解析与评语。
+      x-roles: [student]
+      x-error-codes: [40100, 40300, 40301, 40400]
+      responses:
+        '200':
+          description: 成绩详情
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/StudentResultDetail' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  # ===================== SUBMISSIONS =====================
+  /api/submissions/{id}:
+    parameters:
+      - $ref: '#/components/parameters/IdPath'
+    get:
+      tags: [submissions]
+      operationId: getSubmission
+      summary: 答卷详情（教师/管理员查看任一学生答卷，FR-STAT-02）
+      description: teacher 仅本人考试的答卷（40301）；admin 只读任意。含标准答案、每题得分与评语。
+      x-roles: [teacher, admin]
+      x-error-codes: [40100, 40300, 40301, 40400]
+      responses:
+        '200':
+          description: 答卷详情
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/SubmissionDetail' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /api/submissions/{id}/answers:
+    parameters:
+      - $ref: '#/components/parameters/IdPath'
+    put:
+      tags: [submissions]
+      operationId: saveAnswers
+      summary: 自动保存答案（增量，FR-ANS-03）
+      description: |
+        仅本人答卷（40301）；status 非 in_progress 返回 40904；now > deadline_at + 10s 时先强制交卷（submit_type=forced）再返回 40906。
+        answers 中仅出现的题目被覆盖（增量）；paper_question_id 不属于该试卷或 response 形状与题型不符返回 40000。
+      x-roles: [student]
+      x-error-codes: [40000, 40100, 40300, 40301, 40400, 40904, 40906]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/SaveAnswersRequest' }
+      responses:
+        '200':
+          description: 保存成功
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/SaveAnswersResult' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /api/submissions/{id}/submit:
+    parameters:
+      - $ref: '#/components/parameters/IdPath'
+    post:
+      tags: [submissions]
+      operationId: submitSubmission
+      summary: 交卷（幂等，FR-ANS-04/05）
+      description: |
+        仅本人答卷（40301）。在同一事务内：
+        1. status ≠ in_progress → 409/40904，data 为当前 SubmitResult，任何数据不变；
+        2. now ≤ deadline_at + 10s → 先合并 body.answers（同保存规则），submit_type = auto ? 'auto' : 'manual'，submitted_at = now，answers_accepted=true；
+        3. now > deadline_at + 10s → 忽略 body.answers，按已保存答案交卷，submit_type='forced'，submitted_at = deadline_at，answers_accepted=false（仍返回 200）；
+        4. 立即执行客观题自动阅卷，status 置为 pending_review（含简答题）或 graded。
+      x-roles: [student]
+      x-error-codes: [40000, 40100, 40300, 40301, 40400, 40904]
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/SubmitRequest' }
+      responses:
+        '200':
+          description: 交卷成功
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/SubmitResult' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: 已交卷，请勿重复提交（40904）
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ErrorEnvelope'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/SubmitResult' }
+  /api/submissions/{id}/grades:
+    parameters:
+      - $ref: '#/components/parameters/IdPath'
+    put:
+      tags: [grading]
+      operationId: gradeSubmission
+      summary: 简答题评分（FR-GRADE-02）
+      description: |
+        仅本人考试（40301）；答卷 status 须为 pending_review 或 graded（否则 40902）；成绩已发布 40908。
+        grades 中 paper_question_id 必须是该试卷的 essay 题；0 ≤ score ≤ 题目分值，最多 1 位小数（40000）。
+        可部分评分（按题目逐题批改时每次只传一题）。全部简答题均有分数后：subjective_score = Σ简答得分，
+        total_score = objective_score + subjective_score，status = graded；成绩发布前可重复修改。
+      x-roles: [teacher]
+      x-error-codes: [40000, 40100, 40300, 40301, 40400, 40902, 40908]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/GradeRequest' }
+      responses:
+        '200':
+          description: 评分结果
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/GradeResult' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+
+  # ===================== GRADING =====================
+  /api/exams/{id}/grading:
+    parameters:
+      - $ref: '#/components/parameters/IdPath'
+    get:
+      tags: [grading]
+      operationId: getGradingOverview
+      summary: 批改总览（按学生逐份模式 + 进度，FR-GRADE-02）
+      description: |
+        列出该考试全部已交卷答卷（不含 in_progress 与 absent），pending_review 在前、再按 submitted_at 升序。
+        essay_questions 给出每道简答题的已批 / 总数，用于按题目逐题模式。
+      x-roles: [teacher]
+      x-error-codes: [40100, 40300, 40301, 40400]
+      responses:
+        '200':
+          description: 批改总览
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/GradingOverview' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /api/exams/{id}/grading/questions/{paper_question_id}:
+    parameters:
+      - $ref: '#/components/parameters/IdPath'
+      - name: paper_question_id
+        in: path
+        required: true
+        schema: { type: integer, minimum: 1 }
+    get:
+      tags: [grading]
+      operationId: getGradingByQuestion
+      summary: 按题目逐题批改：某简答题的全部作答（FR-GRADE-02）
+      description: paper_question_id 不属于该考试试卷或不是 essay 题时 40400。未批改的在前。
+      x-roles: [teacher]
+      x-error-codes: [40100, 40300, 40301, 40400]
+      responses:
+        '200':
+          description: 作答列表
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/GradingQuestionAnswers' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /api/exams/{id}/publish-results:
+    parameters:
+      - $ref: '#/components/parameters/IdPath'
+    post:
+      tags: [grading]
+      operationId: publishResults
+      summary: 发布成绩（FR-GRADE-03）
+      description: |
+        先执行该考试兜底（强制交卷 + 生成缺考记录）。考试须为 ended（否则 40902）；已发布 40908；
+        存在 pending_review 或 in_progress 答卷时 40907，data.pending_count 为剩余份数。
+      x-roles: [teacher]
+      x-error-codes: [40000, 40100, 40300, 40301, 40400, 40902, 40907, 40908]
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/PublishResultsRequest' }
+      responses:
+        '200':
+          description: 发布后的考试
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/Exam' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: 状态冲突 / 待批改未完成（40907 时 data 含 pending_count）
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ErrorEnvelope'
+                  - type: object
+                    properties:
+                      data:
+                        nullable: true
+                        type: object
+                        properties:
+                          pending_count: { type: integer }
+  /api/exams/{id}/unpublish-results:
+    parameters:
+      - $ref: '#/components/parameters/IdPath'
+    post:
+      tags: [grading]
+      operationId: unpublishResults
+      summary: 【可选】撤回成绩发布（FR-GRADE-03 P1）
+      description: 未发布时 40902。撤回后学生不可见分数，教师可修改分数。
+      x-optional: true
+      x-roles: [teacher]
+      x-error-codes: [40100, 40300, 40301, 40400, 40902]
+      responses:
+        '200':
+          description: 撤回后的考试
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/Exam' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+
+  # ===================== STATS =====================
+  /api/exams/{id}/scores:
+    parameters:
+      - $ref: '#/components/parameters/IdPath'
+      - $ref: '#/components/parameters/ClassIdQuery'
+    get:
+      tags: [stats]
+      operationId: getScoreSheet
+      summary: 成绩单（FR-STAT-02）
+      description: |
+        参考班级全部学生（含缺考、未参加），不分页。rank 仅对 status=graded 的行（含缺考 0 分）按 total_score 降序计算，
+        同分同名次（1,1,3）；其他行 rank 为 null。class_id 须为参考班级之一（否则 40000）。
+      x-roles: [teacher, admin]
+      x-error-codes: [40000, 40100, 40300, 40301, 40400]
+      parameters:
+        - name: sort
+          in: query
+          schema:
+            type: string
+            enum: [total_desc, username_asc]
+            default: total_desc
+      responses:
+        '200':
+          description: 成绩单
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/ScoreSheet' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /api/exams/{id}/scores/export:
+    parameters:
+      - $ref: '#/components/parameters/IdPath'
+      - $ref: '#/components/parameters/ClassIdQuery'
+    get:
+      tags: [stats]
+      operationId: exportScoreSheet
+      summary: 【可选】导出成绩单 CSV（FR-STAT-06 P2）
+      description: |
+        列：排名,学号,姓名,班级,状态,交卷方式,交卷时间,客观分,主观分,总分,是否及格。UTF-8 带 BOM；
+        Content-Disposition: attachment; filename*=UTF-8''<考试名称>-成绩单.csv。
+        因需携带 Authorization 头，前端用 fetch 获取 Blob 后触发下载。错误时仍返回 JSON 错误信封。
+      x-optional: true
+      x-roles: [teacher, admin]
+      x-error-codes: [40000, 40100, 40300, 40301, 40400]
+      responses:
+        '200':
+          description: CSV 文件
+          content:
+            text/csv:
+              schema: { type: string, format: binary }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /api/exams/{id}/stats/summary:
+    parameters:
+      - $ref: '#/components/parameters/IdPath'
+      - $ref: '#/components/parameters/ClassIdQuery'
+    get:
+      tags: [stats]
+      operationId: getStatsSummary
+      summary: 成绩概要统计（FR-STAT-03）
+      description: |
+        统计对象：status=graded 且 submit_type≠absent 的答卷。应考 = 参考班级学生数；实考 = 统计对象数；
+        缺考 = absent 答卷数 + 考试结束后仍无答卷的学生数；无统计对象时 average/max/min 为 null、pass_rate 为 0。
+        by_class 为各参考班级同口径指标（class_id 过滤时仅含该班）。
+      x-roles: [teacher, admin]
+      x-error-codes: [40000, 40100, 40300, 40301, 40400]
+      responses:
+        '200':
+          description: 概要统计
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/StatsSummary' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /api/exams/{id}/stats/distribution:
+    parameters:
+      - $ref: '#/components/parameters/IdPath'
+      - $ref: '#/components/parameters/ClassIdQuery'
+    get:
+      tags: [stats]
+      operationId: getStatsDistribution
+      summary: 分数段分布（FR-STAT-04）
+      description: |
+        统计对象同 summary。得分率 r = total_score / 试卷总分；固定 5 段：
+        [0,60%)、[60%,70%)、[70%,80%)、[80%,90%)、[90%,100%]（最后一段闭区间）。ratio = count / 实考人数 × 100。
+      x-roles: [teacher, admin]
+      x-error-codes: [40000, 40100, 40300, 40301, 40400]
+      responses:
+        '200':
+          description: 分布
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/StatsDistribution' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /api/exams/{id}/stats/questions:
+    parameters:
+      - $ref: '#/components/parameters/IdPath'
+      - $ref: '#/components/parameters/ClassIdQuery'
+    get:
+      tags: [stats]
+      operationId: getStatsQuestions
+      summary: 每题正确率分析（FR-STAT-05）
+      description: |
+        统计对象同 summary。客观题 correct_rate = 得满分人数 / 实考人数 × 100；简答题 correct_rate 为 null。
+        所有题 score_rate = 平均得分 / 题目分值 × 100。single/multiple 返回 option_stats（各选项被选人数）。
+        sort=rate_asc 时按 score_rate 升序（相同则按 seq）。
+      x-roles: [teacher, admin]
+      x-error-codes: [40000, 40100, 40300, 40301, 40400]
+      parameters:
+        - name: sort
+          in: query
+          schema:
+            type: string
+            enum: [seq, rate_asc]
+            default: seq
+      responses:
+        '200':
+          description: 题目分析
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        required: [actual_count, items]
+                        properties:
+                          actual_count: { type: integer }
+                          items:
+                            type: array
+                            items: { $ref: '#/components/schemas/QuestionStat' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  # ===================== ADMIN =====================
+  /api/admin/overview:
+    get:
+      tags: [admin]
+      operationId: getOverview
+      summary: 【可选】系统数据概览（FR-STAT-06 P2）
+      x-optional: true
+      x-roles: [admin]
+      x-error-codes: [40100, 40300]
+      responses:
+        '200':
+          description: 概览
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/Overview' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      description: 登录返回的 64 位十六进制令牌（32 字节随机数）
+
+  parameters:
+    IdPath:
+      name: id
+      in: path
+      required: true
+      description: 资源 ID（正整数；非法格式返回 40000）
+      schema: { type: integer, minimum: 1 }
+    Page:
+      name: page
+      in: query
+      schema: { type: integer, minimum: 1, default: 1 }
+    PageSize:
+      name: page_size
+      in: query
+      schema: { type: integer, minimum: 1, maximum: 100, default: 10 }
+    ClassIdQuery:
+      name: class_id
+      in: query
+      required: false
+      description: 按参考班级过滤；缺省为全部参考班级
+      schema: { type: integer, minimum: 1 }
+
+  responses:
+    OkNull:
+      description: 成功，data 为 null
+      content:
+        application/json:
+          schema:
+            allOf:
+              - $ref: '#/components/schemas/Envelope'
+              - type: object
+                properties:
+                  data: { nullable: true, type: object, example: null }
+    BadRequest:
+      description: 参数错误（40000 校验失败，data.errors 为字段级错误；40001 JSON 非法；40003 原密码错误）
+      content:
+        application/json:
+          schema:
+            allOf:
+              - $ref: '#/components/schemas/ErrorEnvelope'
+              - type: object
+                properties:
+                  data:
+                    nullable: true
+                    allOf:
+                      - $ref: '#/components/schemas/ValidationErrorData'
+    Unauthorized:
+      description: 40100 未登录或会话失效 / 40101 账号或密码错误
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+    Forbidden:
+      description: 40300 角色无权限 / 40301 资源归属不符 / 40302 账号已禁用 / 40303 不能对自己执行该操作
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+    NotFound:
+      description: 40400 资源不存在
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+    Conflict:
+      description: 409 业务冲突（40900~40909，见 x-error-codes）
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+    Insufficient:
+      description: 42200 题量不足
+      content:
+        application/json:
+          schema:
+            allOf:
+              - $ref: '#/components/schemas/ErrorEnvelope'
+              - type: object
+                properties:
+                  data: { $ref: '#/components/schemas/ShortageData' }
+    TooManyRequests:
+      description: 42900 连续登录失败，账号锁定
+      content:
+        application/json:
+          schema:
+            allOf:
+              - $ref: '#/components/schemas/ErrorEnvelope'
+              - type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      locked_until: { type: string, format: date-time }
+
+  schemas:
+    # ---------- 通用 ----------
+    Envelope:
+      type: object
+      required: [code, message, data]
+      properties:
+        code: { type: integer, example: 0, description: '0 表示成功' }
+        message: { type: string, example: ok }
+        data: { nullable: true }
+    ErrorEnvelope:
+      type: object
+      required: [code, message, data]
+      properties:
+        code: { type: integer, example: 40000, description: 业务错误码 }
+        message: { type: string, example: 参数校验失败 }
+        data: { nullable: true }
+    ValidationErrorData:
+      type: object
+      required: [errors]
+      properties:
+        errors:
+          type: array
+          items:
+            type: object
+            required: [field, message]
+            properties:
+              field: { type: string, example: 'items[2].score', description: 字段路径（数组用下标） }
+              message: { type: string, example: 分值必须为正数且最多 1 位小数 }
+    PageMeta:
+      type: object
+      required: [items, total, page, page_size]
+      properties:
+        items: { type: array, items: {} }
+        total: { type: integer }
+        page: { type: integer }
+        page_size: { type: integer }
+    Role:
+      type: string
+      enum: [admin, teacher, student]
+    UserStatus:
+      type: string
+      enum: [active, disabled]
+    QuestionType:
+      type: string
+      enum: [single, multiple, judge, fill, essay]
+    Difficulty:
+      type: string
+      enum: [easy, medium, hard]
+    ExamStatus:
+      type: string
+      enum: [not_started, ongoing, ended, cancelled]
+    SubmissionStatus:
+      type: string
+      enum: [in_progress, pending_review, graded]
+    SubmitType:
+      type: string
+      nullable: true
+      enum: [manual, auto, forced, absent, null]
+    UserBrief:
+      type: object
+      required: [id, username, name]
+      properties:
+        id: { type: integer }
+        username: { type: string }
+        name: { type: string }
+    ClassBrief:
+      type: object
+      required: [id, name]
+      properties:
+        id: { type: integer }
+        name: { type: string }
+
+    # ---------- AUTH / USER ----------
+    LoginRequest:
+      type: object
+      required: [username, password]
+      properties:
+        username: { type: string, minLength: 1, maxLength: 20 }
+        password: { type: string, minLength: 1, maxLength: 64 }
+    LoginResult:
+      type: object
+      required: [token, expires_at, user]
+      properties:
+        token: { type: string, example: 9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08 }
+        expires_at: { type: string, format: date-time }
+        user: { $ref: '#/components/schemas/User' }
+    ChangePasswordRequest:
+      type: object
+      required: [old_password, new_password, confirm_password]
+      properties:
+        old_password: { type: string, minLength: 1, maxLength: 64 }
+        new_password: { type: string, minLength: 6, maxLength: 32, description: 须同时包含字母与数字 }
+        confirm_password: { type: string }
+    User:
+      type: object
+      description: 对外用户视图（不含 password_hash / password_salt / 锁定字段）
+      required: [id, username, name, role, class_id, class_name, status, created_at, updated_at]
+      properties:
+        id: { type: integer }
+        username: { type: string, example: student1 }
+        name: { type: string, example: 张三 }
+        role: { $ref: '#/components/schemas/Role' }
+        class_id: { type: integer, nullable: true, description: 仅学生有值 }
+        class_name: { type: string, nullable: true }
+        status: { $ref: '#/components/schemas/UserStatus' }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+    UserCreateRequest:
+      type: object
+      required: [username, name, role]
+      properties:
+        username: { type: string, pattern: '^[A-Za-z0-9_]{4,20}$' }
+        name: { type: string, minLength: 1, maxLength: 20 }
+        role: { $ref: '#/components/schemas/Role' }
+        password: { type: string, nullable: true, minLength: 6, maxLength: 32, description: 留空使用默认初始密码 }
+        class_id: { type: integer, nullable: true, description: role=student 时必填 }
+    UserUpdateRequest:
+      type: object
+      properties:
+        name: { type: string, minLength: 1, maxLength: 20 }
+        class_id: { type: integer, nullable: true, description: 仅对学生有效 }
+        status: { $ref: '#/components/schemas/UserStatus' }
+
+    # ---------- CLASS ----------
+    ClassInput:
+      type: object
+      required: [name]
+      properties:
+        name: { type: string, minLength: 1, maxLength: 30, example: 计科2101 }
+        grade: { type: string, maxLength: 10, example: '2021', default: '' }
+        major: { type: string, maxLength: 30, example: 计算机科学与技术, default: '' }
+        remark: { type: string, maxLength: 200, default: '' }
+    ClassInfo:
+      type: object
+      required: [id, name, grade, major, remark, student_count, teachers, created_at, updated_at]
+      properties:
+        id: { type: integer }
+        name: { type: string }
+        grade: { type: string }
+        major: { type: string }
+        remark: { type: string }
+        student_count: { type: integer }
+        teachers:
+          type: array
+          items: { $ref: '#/components/schemas/UserBrief' }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+    ClassMembers:
+      type: object
+      required: [class, students, teachers]
+      properties:
+        class: { $ref: '#/components/schemas/ClassInfo' }
+        students:
+          type: array
+          items:
+            allOf:
+              - $ref: '#/components/schemas/UserBrief'
+              - type: object
+                properties:
+                  status: { $ref: '#/components/schemas/UserStatus' }
+        teachers:
+          type: array
+          items: { $ref: '#/components/schemas/UserBrief' }
+    AddStudentsRequest:
+      type: object
+      required: [student_ids]
+      properties:
+        student_ids:
+          type: array
+          minItems: 1
+          maxItems: 500
+          items: { type: integer }
+        force_move: { type: boolean, default: false, description: 为 true 时把已属于其他班级的学生转入本班 }
+    StudentIdsRequest:
+      type: object
+      required: [student_ids]
+      properties:
+        student_ids:
+          type: array
+          minItems: 1
+          maxItems: 500
+          items: { type: integer }
+    TeacherIdsRequest:
+      type: object
+      required: [teacher_ids]
+      properties:
+        teacher_ids:
+          type: array
+          maxItems: 50
+          items: { type: integer }
+    MoveConflictData:
+      type: object
+      required: [conflicts]
+      properties:
+        conflicts:
+          type: array
+          items:
+            type: object
+            properties:
+              student_id: { type: integer }
+              username: { type: string }
+              name: { type: string }
+              current_class_id: { type: integer }
+              current_class_name: { type: string }
+
+    # ---------- TAG / QUESTION ----------
+    TagInput:
+      type: object
+      required: [name]
+      properties:
+        name: { type: string, minLength: 1, maxLength: 20 }
+    Tag:
+      type: object
+      required: [id, name, question_count, created_at]
+      properties:
+        id: { type: integer }
+        name: { type: string }
+        question_count: { type: integer }
+        created_at: { type: string, format: date-time }
+    QuestionOption:
+      type: object
+      required: [key, text]
+      properties:
+        key: { type: string, pattern: '^[A-H]$', description: 按顺序 A、B、C… }
+        text: { type: string, minLength: 1, maxLength: 500 }
+    AnswerValue:
+      description: |
+        标准答案 / 学生作答，形状随题型（见 info.description 表）。
+        single: string；multiple: string[]；judge: boolean；fill: string[][]（标准答案）或 string[]（作答）；essay: string。
+      nullable: true
+      oneOf:
+        - type: string
+        - type: boolean
+        - type: array
+          items: { type: string }
+        - type: array
+          items:
+            type: array
+            items: { type: string }
+    QuestionInput:
+      type: object
+      required: [type, stem, difficulty, score]
+      description: |
+        校验规则（违反返回 40000，field 指明字段）：
+        - stem 1~2000 字；score > 0 且最多 1 位小数；tags 0~5 个，每个 1~20 字，去重；analysis ≤ 2000 字。
+        - single/multiple：options 2~8 个，key 必须依次为 A、B、C…；single 的 answer 为某个 key；
+          multiple 的 answer 为 ≥2 个不重复 key（服务端升序存储）。
+        - judge：options 忽略（存为 []）；answer 为 boolean。
+        - fill：stem 中 `___`（三个下划线）的个数 = blank_count ≥ 1；answer 为长度等于 blank_count 的数组，
+          每项为 1~10 个非空可接受答案字符串（前端将 “答案1|答案2” 拆分为数组）。
+        - essay：answer 为参考答案字符串（≤2000 字）或 null。
+      properties:
+        type: { $ref: '#/components/schemas/QuestionType' }
+        stem: { type: string, minLength: 1, maxLength: 2000 }
+        options:
+          type: array
+          items: { $ref: '#/components/schemas/QuestionOption' }
+        answer: { $ref: '#/components/schemas/AnswerValue' }
+        analysis: { type: string, maxLength: 2000, default: '' }
+        difficulty: { $ref: '#/components/schemas/Difficulty' }
+        tags:
+          type: array
+          maxItems: 5
+          items: { type: string, minLength: 1, maxLength: 20 }
+        score: { type: number, exclusiveMinimum: true, minimum: 0, maximum: 100, example: 2 }
+    Question:
+      type: object
+      required: [id, type, stem, options, answer, analysis, difficulty, tags, score, blank_count, ref_count, created_at, updated_at]
+      properties:
+        id: { type: integer }
+        type: { $ref: '#/components/schemas/QuestionType' }
+        stem: { type: string }
+        options:
+          type: array
+          items: { $ref: '#/components/schemas/QuestionOption' }
+        answer: { $ref: '#/components/schemas/AnswerValue' }
+        analysis: { type: string }
+        difficulty: { $ref: '#/components/schemas/Difficulty' }
+        tags:
+          type: array
+          items: { type: string }
+        score: { type: number }
+        blank_count: { type: integer, description: 填空题空数，其他题型为 0 }
+        ref_count: { type: integer, description: 被多少份试卷引用 }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+    QuestionPage:
+      allOf:
+        - $ref: '#/components/schemas/PageMeta'
+        - type: object
+          required: [summary]
+          properties:
+            items:
+              type: array
+              items: { $ref: '#/components/schemas/Question' }
+            summary:
+              type: object
+              properties:
+                by_type:
+                  type: object
+                  properties:
+                    single: { type: integer }
+                    multiple: { type: integer }
+                    judge: { type: integer }
+                    fill: { type: integer }
+                    essay: { type: integer }
+                by_difficulty:
+                  type: object
+                  properties:
+                    easy: { type: integer }
+                    medium: { type: integer }
+                    hard: { type: integer }
+    ImportQuestionsRequest:
+      type: object
+      required: [questions]
+      properties:
+        questions:
+          type: array
+          minItems: 1
+          maxItems: 200
+          items: { $ref: '#/components/schemas/QuestionInput' }
+    ImportResult:
+      type: object
+      required: [success_count, fail_count, failures]
+      properties:
+        success_count: { type: integer }
+        fail_count: { type: integer }
+        failures:
+          type: array
+          items:
+            type: object
+            properties:
+              index: { type: integer, description: 在 questions 数组中的下标（从 0 开始） }
+              errors:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    field: { type: string }
+                    message: { type: string }
+
+    # ---------- PAPER ----------
+    PaperInput:
+      type: object
+      required: [title, items]
+      properties:
+        title: { type: string, minLength: 1, maxLength: 100 }
+        description: { type: string, maxLength: 500, default: '' }
+        items:
+          type: array
+          minItems: 1
+          maxItems: 200
+          items:
+            type: object
+            required: [question_id, score]
+            properties:
+              question_id: { type: integer }
+              score: { type: number, exclusiveMinimum: true, minimum: 0, maximum: 100 }
+    PaperQuestion:
+      type: object
+      description: 试卷中的题目快照
+      required: [id, seq, question_id, type, stem, options, answer, analysis, difficulty, tags, score, blank_count]
+      properties:
+        id: { type: integer, description: paper_question_id }
+        seq: { type: integer, description: 题号，从 1 开始 }
+        question_id: { type: integer, nullable: true, description: 来源题目 ID }
+        type: { $ref: '#/components/schemas/QuestionType' }
+        stem: { type: string }
+        options:
+          type: array
+          items: { $ref: '#/components/schemas/QuestionOption' }
+        answer: { $ref: '#/components/schemas/AnswerValue' }
+        analysis: { type: string }
+        difficulty: { $ref: '#/components/schemas/Difficulty' }
+        tags:
+          type: array
+          items: { type: string }
+        score: { type: number }
+        blank_count: { type: integer }
+    TypeStat:
+      type: object
+      required: [type, count, score]
+      properties:
+        type: { $ref: '#/components/schemas/QuestionType' }
+        count: { type: integer }
+        score: { type: number, description: 该题型小计分值 }
+    PaperSummary:
+      type: object
+      required: [id, title, description, question_count, total_score, exam_ref_count, locked, created_at, updated_at]
+      properties:
+        id: { type: integer }
+        title: { type: string }
+        description: { type: string }
+        question_count: { type: integer }
+        total_score: { type: number }
+        exam_ref_count: { type: integer, description: 被考试引用次数（含已取消） }
+        locked: { type: boolean, description: exam_ref_count > 0 }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+    PaperDetail:
+      allOf:
+        - $ref: '#/components/schemas/PaperSummary'
+        - type: object
+          required: [type_stats, questions]
+          properties:
+            type_stats:
+              type: array
+              items: { $ref: '#/components/schemas/TypeStat' }
+            questions:
+              type: array
+              items: { $ref: '#/components/schemas/PaperQuestion' }
+    RandomRule:
+      type: object
+      required: [type, count, score]
+      properties:
+        type: { $ref: '#/components/schemas/QuestionType' }
+        count: { type: integer, minimum: 1, maximum: 100 }
+        score: { type: number, exclusiveMinimum: true, minimum: 0, maximum: 100, description: 每题分值 }
+        difficulty: { allOf: [{ $ref: '#/components/schemas/Difficulty' }], nullable: true }
+        tags:
+          type: array
+          description: 命中任一标签即可；空数组/缺省表示不限
+          items: { type: string }
+    RandomGenerateRequest:
+      type: object
+      required: [rules]
+      properties:
+        rules:
+          type: array
+          minItems: 1
+          maxItems: 20
+          items: { $ref: '#/components/schemas/RandomRule' }
+    RandomDraft:
+      type: object
+      required: [items, total_score]
+      properties:
+        items:
+          type: array
+          items:
+            type: object
+            required: [rule_index, score, question]
+            properties:
+              rule_index: { type: integer, description: 对应 rules 下标 }
+              score: { type: number }
+              question: { $ref: '#/components/schemas/Question' }
+        total_score: { type: number }
+    RandomReplaceRequest:
+      type: object
+      required: [type, exclude_question_ids]
+      properties:
+        type: { $ref: '#/components/schemas/QuestionType' }
+        difficulty: { allOf: [{ $ref: '#/components/schemas/Difficulty' }], nullable: true }
+        tags:
+          type: array
+          items: { type: string }
+        exclude_question_ids:
+          type: array
+          items: { type: integer }
+    ShortageData:
+      type: object
+      required: [shortages]
+      properties:
+        shortages:
+          type: array
+          items:
+            type: object
+            properties:
+              rule_index: { type: integer }
+              type: { $ref: '#/components/schemas/QuestionType' }
+              difficulty: { type: string, nullable: true }
+              tags:
+                type: array
+                items: { type: string }
+              available: { type: integer }
+              required: { type: integer }
+
+    # ---------- EXAM ----------
+    ExamInput:
+      type: object
+      required: [title, paper_id, start_time, end_time, duration_minutes, class_ids]
+      properties:
+        title: { type: string, minLength: 1, maxLength: 100 }
+        description: { type: string, maxLength: 1000, default: '' }
+        paper_id: { type: integer }
+        start_time: { type: string, format: date-time }
+        end_time: { type: string, format: date-time }
+        duration_minutes: { type: integer, minimum: 1, maximum: 1440 }
+        class_ids:
+          type: array
+          minItems: 1
+          items: { type: integer }
+        pass_score: { type: number, nullable: true, description: 缺省为试卷总分 × 60% }
+        shuffle_options: { type: boolean, default: false, description: 【可选 P2】选项乱序 }
+    ExamUpdateRequest:
+      type: object
+      description: 字段同 ExamInput，均可选；ongoing 状态仅允许 end_time
+      properties:
+        title: { type: string, minLength: 1, maxLength: 100 }
+        description: { type: string, maxLength: 1000 }
+        paper_id: { type: integer }
+        start_time: { type: string, format: date-time }
+        end_time: { type: string, format: date-time }
+        duration_minutes: { type: integer, minimum: 1, maximum: 1440 }
+        class_ids:
+          type: array
+          minItems: 1
+          items: { type: integer }
+        pass_score: { type: number }
+        shuffle_options: { type: boolean }
+    ExamCounts:
+      type: object
+      required: [expected, started, submitted, pending_review, graded, absent]
+      properties:
+        expected: { type: integer, description: 应考人数（参考班级当前学生数） }
+        started: { type: integer, description: 作答中人数 }
+        submitted: { type: integer, description: 已交卷人数（pending_review + graded，不含缺考） }
+        pending_review: { type: integer, description: 待批改份数 }
+        graded: { type: integer, description: 已批改份数（不含缺考） }
+        absent: { type: integer, description: 缺考人数 }
+    Exam:
+      type: object
+      required: [id, title, description, paper_id, paper_title, total_score, question_count, start_time, end_time,
+                 duration_minutes, pass_score, shuffle_options, status, classes, teacher, results_published,
+                 results_published_at, allow_review, cancelled_at, counts, created_at, updated_at]
+      properties:
+        id: { type: integer }
+        title: { type: string }
+        description: { type: string }
+        paper_id: { type: integer }
+        paper_title: { type: string }
+        total_score: { type: number }
+        question_count: { type: integer }
+        start_time: { type: string, format: date-time }
+        end_time: { type: string, format: date-time }
+        duration_minutes: { type: integer }
+        pass_score: { type: number }
+        shuffle_options: { type: boolean }
+        status: { $ref: '#/components/schemas/ExamStatus' }
+        classes:
+          type: array
+          items: { $ref: '#/components/schemas/ClassBrief' }
+        teacher: { $ref: '#/components/schemas/UserBrief' }
+        results_published: { type: boolean }
+        results_published_at: { type: string, format: date-time, nullable: true }
+        allow_review: { type: boolean }
+        cancelled_at: { type: string, format: date-time, nullable: true }
+        counts: { $ref: '#/components/schemas/ExamCounts' }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+    ExamMonitor:
+      type: object
+      required: [exam_id, status, server_time, items]
+      properties:
+        exam_id: { type: integer }
+        status: { $ref: '#/components/schemas/ExamStatus' }
+        server_time: { type: string, format: date-time }
+        items:
+          type: array
+          items:
+            type: object
+            required: [student_id, username, name, class_id, class_name, state, submission_id, started_at, submitted_at, submit_type]
+            properties:
+              student_id: { type: integer }
+              username: { type: string }
+              name: { type: string }
+              class_id: { type: integer }
+              class_name: { type: string }
+              state:
+                type: string
+                enum: [not_started, in_progress, submitted, absent]
+              submission_id: { type: integer, nullable: true }
+              started_at: { type: string, format: date-time, nullable: true }
+              submitted_at: { type: string, format: date-time, nullable: true }
+              submit_type: { $ref: '#/components/schemas/SubmitType' }
+
+    # ---------- STUDENT ----------
+    StudentExam:
+      type: object
+      required: [id, title, description, start_time, end_time, duration_minutes, total_score, question_count, pass_score,
+                 student_status, submission_id, submission_status, results_published]
+      properties:
+        id: { type: integer, description: exam_id }
+        title: { type: string }
+        description: { type: string }
+        start_time: { type: string, format: date-time }
+        end_time: { type: string, format: date-time }
+        duration_minutes: { type: integer }
+        total_score: { type: number }
+        question_count: { type: integer }
+        pass_score: { type: number }
+        student_status:
+          type: string
+          description: |
+            not_started 未开始（now < start_time）；available 可开始（窗口内、无答卷）；in_progress 可继续（窗口内、答卷作答中）；
+            finished 已交卷（含被强制交卷）；missed 已错过（窗口结束且无答卷或为缺考记录）
+          enum: [not_started, available, in_progress, finished, missed]
+        submission_id: { type: integer, nullable: true }
+        submission_status: { allOf: [{ $ref: '#/components/schemas/SubmissionStatus' }], nullable: true }
+        results_published: { type: boolean }
+    StudentQuestion:
+      type: object
+      description: 学生作答视图（不含 answer / analysis）
+      required: [id, seq, type, stem, options, score, blank_count]
+      properties:
+        id: { type: integer, description: paper_question_id }
+        seq: { type: integer }
+        type: { $ref: '#/components/schemas/QuestionType' }
+        stem: { type: string }
+        options:
+          type: array
+          items: { $ref: '#/components/schemas/QuestionOption' }
+        score: { type: number }
+        blank_count: { type: integer }
+    AnswerItem:
+      type: object
+      required: [paper_question_id, response]
+      properties:
+        paper_question_id: { type: integer }
+        response: { $ref: '#/components/schemas/AnswerValue' }
+    AnswerSheet:
+      type: object
+      required: [submission_id, exam, started_at, deadline_at, server_time, last_saved_at, questions, answers]
+      properties:
+        submission_id: { type: integer }
+        exam:
+          type: object
+          properties:
+            id: { type: integer }
+            title: { type: string }
+            description: { type: string }
+            total_score: { type: number }
+            duration_minutes: { type: integer }
+            start_time: { type: string, format: date-time }
+            end_time: { type: string, format: date-time }
+        started_at: { type: string, format: date-time }
+        deadline_at: { type: string, format: date-time }
+        server_time: { type: string, format: date-time, description: 前端据此计算时钟偏移 }
+        last_saved_at: { type: string, format: date-time, nullable: true }
+        questions:
+          type: array
+          items: { $ref: '#/components/schemas/StudentQuestion' }
+        answers:
+          type: array
+          description: 每题一项（未作答 response 为 null）
+          items: { $ref: '#/components/schemas/AnswerItem' }
+    SaveAnswersRequest:
+      type: object
+      required: [answers]
+      properties:
+        answers:
+          type: array
+          minItems: 1
+          maxItems: 200
+          items: { $ref: '#/components/schemas/AnswerItem' }
+    SaveAnswersResult:
+      type: object
+      required: [saved_at, server_time, deadline_at]
+      properties:
+        saved_at: { type: string, format: date-time }
+        server_time: { type: string, format: date-time }
+        deadline_at: { type: string, format: date-time, description: 考试被延长时会变化 }
+    SubmitRequest:
+      type: object
+      properties:
+        answers:
+          type: array
+          maxItems: 200
+          items: { $ref: '#/components/schemas/AnswerItem' }
+        auto: { type: boolean, default: false, description: 倒计时归零前端自动提交时为 true }
+    SubmitResult:
+      type: object
+      required: [submission_id, status, submit_type, submitted_at, answers_accepted]
+      properties:
+        submission_id: { type: integer }
+        status: { $ref: '#/components/schemas/SubmissionStatus' }
+        submit_type: { $ref: '#/components/schemas/SubmitType' }
+        submitted_at: { type: string, format: date-time }
+        answers_accepted: { type: boolean, description: 本次请求携带的答案是否被采纳 }
+    StudentResultItem:
+      type: object
+      required: [exam_id, exam_title, submission_id, status, submit_type, submitted_at, results_published, total_score, full_score, passed]
+      properties:
+        exam_id: { type: integer }
+        exam_title: { type: string }
+        submission_id: { type: integer }
+        status: { $ref: '#/components/schemas/SubmissionStatus' }
+        submit_type: { $ref: '#/components/schemas/SubmitType' }
+        submitted_at: { type: string, format: date-time, nullable: true }
+        results_published: { type: boolean }
+        total_score: { type: number, nullable: true, description: 未发布时为 null }
+        full_score: { type: number, description: 试卷总分 }
+        passed: { type: boolean, nullable: true, description: 未发布时为 null }
+    ReviewQuestion:
+      type: object
+      description: 答卷回顾的一题
+      required: [id, seq, type, stem, options, score, blank_count, response, correct_answer, analysis, got_score, is_correct, comment]
+      properties:
+        id: { type: integer, description: paper_question_id }
+        seq: { type: integer }
+        type: { $ref: '#/components/schemas/QuestionType' }
+        stem: { type: string }
+        options:
+          type: array
+          items: { $ref: '#/components/schemas/QuestionOption' }
+        score: { type: number, description: 题目分值 }
+        blank_count: { type: integer }
+        response: { $ref: '#/components/schemas/AnswerValue' }
+        correct_answer: { $ref: '#/components/schemas/AnswerValue' }
+        analysis: { type: string }
+        got_score: { type: number, nullable: true, description: 简答未批改时为 null }
+        is_correct: { type: boolean, nullable: true, description: 客观题是否得满分；简答为 null }
+        comment: { type: string, nullable: true }
+    SubmissionScore:
+      type: object
+      required: [id, status, submit_type, started_at, deadline_at, submitted_at, objective_score, subjective_score, total_score, passed]
+      properties:
+        id: { type: integer }
+        status: { $ref: '#/components/schemas/SubmissionStatus' }
+        submit_type: { $ref: '#/components/schemas/SubmitType' }
+        started_at: { type: string, format: date-time, nullable: true }
+        deadline_at: { type: string, format: date-time, nullable: true }
+        submitted_at: { type: string, format: date-time, nullable: true }
+        objective_score: { type: number, nullable: true }
+        subjective_score: { type: number, nullable: true }
+        total_score: { type: number, nullable: true }
+        passed: { type: boolean, nullable: true }
+    StudentResultDetail:
+      type: object
+      required: [exam, submission, results_published, allow_review, questions]
+      properties:
+        exam:
+          type: object
+          properties:
+            id: { type: integer }
+            title: { type: string }
+            total_score: { type: number }
+            pass_score: { type: number }
+        submission: { $ref: '#/components/schemas/SubmissionScore' }
+        results_published: { type: boolean }
+        allow_review: { type: boolean }
+        questions:
+          type: array
+          description: 仅 results_published 且 allow_review 时非空
+          items: { $ref: '#/components/schemas/ReviewQuestion' }
+    SubmissionDetail:
+      type: object
+      required: [exam, student, submission, questions]
+      properties:
+        exam:
+          type: object
+          properties:
+            id: { type: integer }
+            title: { type: string }
+            total_score: { type: number }
+            pass_score: { type: number }
+            results_published: { type: boolean }
+        student:
+          allOf:
+            - $ref: '#/components/schemas/UserBrief'
+            - type: object
+              properties:
+                class_id: { type: integer }
+                class_name: { type: string }
+        submission: { $ref: '#/components/schemas/SubmissionScore' }
+        questions:
+          type: array
+          items: { $ref: '#/components/schemas/ReviewQuestion' }
+
+    # ---------- GRADING ----------
+    GradeRequest:
+      type: object
+      required: [grades]
+      properties:
+        grades:
+          type: array
+          minItems: 1
+          items:
+            type: object
+            required: [paper_question_id, score]
+            properties:
+              paper_question_id: { type: integer }
+              score: { type: number, minimum: 0 }
+              comment: { type: string, maxLength: 500, nullable: true }
+    GradeResult:
+      type: object
+      required: [submission_id, status, objective_score, subjective_score, total_score, essay_graded, essay_total]
+      properties:
+        submission_id: { type: integer }
+        status: { $ref: '#/components/schemas/SubmissionStatus' }
+        objective_score: { type: number }
+        subjective_score: { type: number, nullable: true, description: 未全部批完时为已批部分之和 }
+        total_score: { type: number, nullable: true, description: 全部批完前为 null }
+        essay_graded: { type: integer }
+        essay_total: { type: integer }
+    GradingOverview:
+      type: object
+      required: [exam_id, results_published, progress, essay_questions, submissions]
+      properties:
+        exam_id: { type: integer }
+        results_published: { type: boolean }
+        progress:
+          type: object
+          required: [total, graded, pending]
+          properties:
+            total: { type: integer, description: 已交卷份数（不含缺考） }
+            graded: { type: integer }
+            pending: { type: integer }
+        essay_questions:
+          type: array
+          items:
+            type: object
+            properties:
+              paper_question_id: { type: integer }
+              seq: { type: integer }
+              stem: { type: string }
+              score: { type: number }
+              graded_count: { type: integer }
+              total_count: { type: integer }
+        submissions:
+          type: array
+          items:
+            type: object
+            properties:
+              submission_id: { type: integer }
+              student:
+                allOf:
+                  - $ref: '#/components/schemas/UserBrief'
+                  - type: object
+                    properties:
+                      class_name: { type: string }
+              status: { $ref: '#/components/schemas/SubmissionStatus' }
+              submitted_at: { type: string, format: date-time }
+              objective_score: { type: number }
+              total_score: { type: number, nullable: true }
+              essay_graded: { type: integer }
+              essay_total: { type: integer }
+    GradingQuestionAnswers:
+      type: object
+      required: [question, items]
+      properties:
+        question:
+          type: object
+          properties:
+            paper_question_id: { type: integer }
+            seq: { type: integer }
+            stem: { type: string }
+            score: { type: number }
+            reference_answer: { type: string, nullable: true }
+            analysis: { type: string }
+        items:
+          type: array
+          items:
+            type: object
+            properties:
+              submission_id: { type: integer }
+              student: { $ref: '#/components/schemas/UserBrief' }
+              response: { type: string, nullable: true }
+              score: { type: number, nullable: true }
+              comment: { type: string, nullable: true }
+              graded_at: { type: string, format: date-time, nullable: true }
+    PublishResultsRequest:
+      type: object
+      properties:
+        allow_review: { type: boolean, default: true, description: 是否允许学生查看答案与解析 }
+
+    # ---------- STATS ----------
+    ScoreRow:
+      type: object
+      required: [rank, student_id, username, name, class_id, class_name, submission_id, status, submit_type, submitted_at,
+                 objective_score, subjective_score, total_score, passed]
+      properties:
+        rank: { type: integer, nullable: true }
+        student_id: { type: integer }
+        username: { type: string, description: 学号 }
+        name: { type: string }
+        class_id: { type: integer }
+        class_name: { type: string }
+        submission_id: { type: integer, nullable: true }
+        status:
+          type: string
+          description: not_started 表示尚无答卷（考试未结束时）
+          enum: [not_started, in_progress, pending_review, graded]
+        submit_type: { $ref: '#/components/schemas/SubmitType' }
+        submitted_at: { type: string, format: date-time, nullable: true }
+        objective_score: { type: number, nullable: true }
+        subjective_score: { type: number, nullable: true }
+        total_score: { type: number, nullable: true }
+        passed: { type: boolean, nullable: true, description: 仅 graded 行有值 }
+    ScoreSheet:
+      type: object
+      required: [exam, items]
+      properties:
+        exam:
+          type: object
+          properties:
+            id: { type: integer }
+            title: { type: string }
+            total_score: { type: number }
+            pass_score: { type: number }
+            status: { $ref: '#/components/schemas/ExamStatus' }
+            results_published: { type: boolean }
+            classes:
+              type: array
+              items: { $ref: '#/components/schemas/ClassBrief' }
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/ScoreRow' }
+    SummaryMetrics:
+      type: object
+      required: [expected_count, actual_count, absent_count, pending_count, average_score, max_score, min_score, pass_count, pass_rate]
+      properties:
+        expected_count: { type: integer }
+        actual_count: { type: integer }
+        absent_count: { type: integer }
+        pending_count: { type: integer, description: 作答中 + 待批改份数（未计入统计） }
+        average_score: { type: number, nullable: true, description: 保留 2 位小数 }
+        max_score: { type: number, nullable: true }
+        min_score: { type: number, nullable: true }
+        pass_count: { type: integer }
+        pass_rate: { type: number, description: 百分比，保留 1 位小数 }
+    StatsSummary:
+      allOf:
+        - $ref: '#/components/schemas/SummaryMetrics'
+        - type: object
+          required: [total_score, pass_score, by_class]
+          properties:
+            total_score: { type: number }
+            pass_score: { type: number }
+            by_class:
+              type: array
+              items:
+                allOf:
+                  - type: object
+                    properties:
+                      class_id: { type: integer }
+                      class_name: { type: string }
+                  - $ref: '#/components/schemas/SummaryMetrics'
+    StatsDistribution:
+      type: object
+      required: [total_score, actual_count, buckets]
+      properties:
+        total_score: { type: number }
+        actual_count: { type: integer }
+        buckets:
+          type: array
+          description: 固定 5 项，按得分率升序
+          items:
+            type: object
+            required: [label, min_rate, max_rate, min_score, max_score, count, ratio]
+            properties:
+              label: { type: string, example: '[60%,70%)' }
+              min_rate: { type: number, example: 60 }
+              max_rate: { type: number, example: 70 }
+              min_score: { type: number, description: 对应分数下界 = total_score × min_rate / 100 }
+              max_score: { type: number }
+              count: { type: integer }
+              ratio: { type: number, description: 百分比 }
+    QuestionStat:
+      type: object
+      required: [paper_question_id, seq, type, stem_summary, difficulty, tags, score, attempt_count, full_score_count,
+                 avg_score, correct_rate, score_rate, option_stats]
+      properties:
+        paper_question_id: { type: integer }
+        seq: { type: integer }
+        type: { $ref: '#/components/schemas/QuestionType' }
+        stem_summary: { type: string, description: 题干前 50 字 }
+        difficulty: { $ref: '#/components/schemas/Difficulty' }
+        tags:
+          type: array
+          items: { type: string }
+        score: { type: number }
+        attempt_count: { type: integer, description: 实考人数 }
+        full_score_count: { type: integer }
+        avg_score: { type: number, description: 保留 2 位小数 }
+        correct_rate: { type: number, nullable: true, description: 客观题正确率百分比；简答为 null }
+        score_rate: { type: number, description: 得分率百分比 }
+        option_stats:
+          type: array
+          description: 仅 single/multiple，其余为 []
+          items:
+            type: object
+            properties:
+              key: { type: string }
+              count: { type: integer }
+              ratio: { type: number }
+              is_correct: { type: boolean }
+
+    # ---------- ADMIN ----------
+    Overview:
+      type: object
+      required: [users, class_count, question_count, paper_count, exams]
+      properties:
+        users:
+          type: object
+          properties:
+            admin: { type: integer }
+            teacher: { type: integer }
+            student: { type: integer }
+            total: { type: integer }
+        class_count: { type: integer }
+        question_count: { type: integer, description: 未删除题目数 }
+        paper_count: { type: integer }
+        exams:
+          type: object
+          properties:
+            not_started: { type: integer }
+            ongoing: { type: integer }
+            ended: { type: integer }
+            cancelled: { type: integer }
+            total: { type: integer }

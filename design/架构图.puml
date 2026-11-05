@@ -1,0 +1,143 @@
+@startuml 在线考试系统架构图
+title 在线考试系统 组件图（B/S，单进程，零第三方依赖）
+skinparam componentStyle uml2
+skinparam shadowing false
+left to right direction
+
+actor "管理员" as Admin
+actor "教师" as Teacher
+actor "学生" as Student
+
+node "浏览器（Chrome / Edge / Firefox）" as Browser {
+  package "frontend/（原生 JS SPA，hash 路由，无构建）" as FE {
+    [index.html + css/style.css] as Shell
+    [main.js\n启动/恢复登录态] as Main
+    [router.js\nhash 路由 + 角色守卫] as Router
+    [store.js\n令牌与当前用户] as Store
+    [api.js\nfetch 封装 + 统一错误处理] as ApiClient
+    package "pages/" {
+      [login / profile] as PCommon
+      [admin/*\n用户·班级·概览] as PAdmin
+      [teacher/*\n题库·试卷·考试·阅卷·成绩统计] as PTeacher
+      [student/*\n我的考试·答题·成绩] as PStudent
+    }
+    package "components/ + utils/" {
+      [layout / modal / table / pagination] as Comp
+      [question-view\n题目渲染（文本转义）] as QView
+      [bar-chart\n原生 SVG 柱状图] as Chart
+      [dom.js / format.js] as Utils
+    }
+    database "localStorage\n(token, 答案草稿)" as LS
+  }
+}
+
+node "Node.js ≥ 18 进程（backend/server.mjs）" as Node {
+  package "接入层 core/" {
+    [node:http Server] as Http
+    [static.mjs\n静态文件 + 防路径穿越] as Static
+    [http.mjs\nJSON 解析(≤1MB)/响应信封] as HttpUtil
+    [router.mjs\n方法+路径参数匹配] as BRouter
+    [errors.mjs\nAppError + 错误码表] as Errors
+    [validator.mjs\n字段校验] as Validator
+  }
+  package "middleware/" {
+    [auth.mjs\n令牌鉴权 + RBAC] as Auth
+  }
+  package "routes/ + controllers/" {
+    [routes/index.mjs\n路由表(角色声明)] as Routes
+    [*.controller.mjs\n参数提取/校验/调用服务] as Controllers
+  }
+  package "services/（业务层，不直接访问文件）" {
+    [auth / user / class] as SAuth
+    [tag / question / paper] as SBank
+    [exam] as SExam
+    [answer\n开始·保存·交卷·兜底] as SAnswer
+    [grading\n自动+人工阅卷·发布] as SGrade
+    [stat\n成绩单·统计·导出·概览] as SStat
+    [scheduler\n每 30s 超时兜底/缺考/清理会话] as SSched
+  }
+  package "domain/（纯函数，可单测）" {
+    [password.mjs\nscrypt+盐, timingSafeEqual] as DPwd
+    [question-rules.mjs] as DRules
+    [scoring.mjs\n客观题判分] as DScore
+    [exam-status.mjs\n状态/截止时刻] as DStatus
+    [random-picker.mjs] as DRandom
+    [statistics.mjs] as DStats
+    [csv.mjs] as DCsv
+  }
+  package "repositories/（仓储层，统一接口）" {
+    [index.mjs\ncreateRepositories + transaction] as RIndex
+    [*.repository.mjs\nusers/sessions/classes/tags/\nquestions/papers/exams/submissions] as Repos
+    [json-store.mjs\n内存数据 + 互斥锁 + 原子写] as JStore
+    [mysql/*（预留）] as MyRepo
+  }
+  [config.mjs] as Config
+  [seed.mjs\n空库种子数据] as Seed
+}
+
+database "backend/data/db.json\n(写 tmp → fsync → rename)" as DB
+database "MySQL 8（迁移目标\nddl.sql）" as MySQL
+
+Admin --> Browser
+Teacher --> Browser
+Student --> Browser
+
+Shell --> Main
+Main --> Router
+Router --> PCommon
+Router --> PAdmin
+Router --> PTeacher
+Router --> PStudent
+PCommon --> ApiClient
+PAdmin --> ApiClient
+PTeacher --> ApiClient
+PStudent --> ApiClient
+PTeacher --> Chart
+PStudent --> QView
+PTeacher --> QView
+ApiClient --> Store
+Store --> LS
+PStudent --> LS : 答案草稿
+
+Browser --> Http : HTTP GET /*（静态资源）
+ApiClient --> Http : HTTP JSON /api/*\nAuthorization: Bearer
+
+Http --> Static
+Http --> BRouter
+BRouter --> HttpUtil
+BRouter --> Auth
+Auth --> Routes
+Routes --> Controllers
+Controllers --> Validator
+Controllers --> SAuth
+Controllers --> SBank
+Controllers --> SExam
+Controllers --> SAnswer
+Controllers --> SGrade
+Controllers --> SStat
+SAnswer --> SGrade : 交卷即自动阅卷
+SSched --> SAnswer
+SAuth --> DPwd
+SBank --> DRules
+SBank --> DRandom
+SExam --> DStatus
+SAnswer --> DStatus
+SGrade --> DScore
+SStat --> DStats
+SStat --> DCsv
+SAuth --> RIndex
+SBank --> RIndex
+SExam --> RIndex
+SAnswer --> RIndex
+SGrade --> RIndex
+SStat --> RIndex
+RIndex --> Repos
+Repos --> JStore
+Repos ..> MyRepo : 可替换实现
+JStore --> DB
+MyRepo ..> MySQL
+Seed --> RIndex
+Config --> Http
+Errors <.. Controllers
+Errors <.. SAuth
+@enduml

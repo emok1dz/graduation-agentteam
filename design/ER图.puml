@@ -1,0 +1,182 @@
+@startuml 在线考试系统ER图
+title 在线考试系统 实体关系图（与 database/ddl.sql 一致）
+hide circle
+skinparam linetype ortho
+skinparam classAttributeIconSize 0
+
+entity "users\n用户" as users {
+  * id : BIGINT <<PK>>
+  --
+  * username : VARCHAR(20) <<UK>>
+  * name : VARCHAR(20)
+  * role : ENUM(admin,teacher,student)
+    class_id : BIGINT <<FK>>
+  * status : ENUM(active,disabled)
+  * password_hash : CHAR(128)
+  * password_salt : CHAR(32)
+  * failed_login_count : INT
+    locked_until : DATETIME
+  * created_at / updated_at
+}
+
+entity "sessions\n会话" as sessions {
+  * id : BIGINT <<PK>>
+  --
+  * token_hash : CHAR(64) <<UK>>
+  * user_id : BIGINT <<FK>>
+  * created_at : DATETIME
+  * last_active_at : DATETIME
+  * expires_at : DATETIME
+}
+
+entity "classes\n班级" as classes {
+  * id : BIGINT <<PK>>
+  --
+  * name : VARCHAR(30) <<UK>>
+    grade : VARCHAR(10)
+    major : VARCHAR(30)
+    remark : VARCHAR(200)
+  * created_at / updated_at
+}
+
+entity "class_teachers\n任课关系" as class_teachers {
+  * class_id : BIGINT <<PK,FK>>
+  * teacher_id : BIGINT <<PK,FK>>
+  --
+  * created_at : DATETIME
+}
+
+entity "tags\n知识点标签" as tags {
+  * id : BIGINT <<PK>>
+  --
+  * teacher_id : BIGINT <<FK>>
+  * name : VARCHAR(20)
+  * created_at : DATETIME
+  ..
+  UK(teacher_id, name)
+}
+
+entity "questions\n题目" as questions {
+  * id : BIGINT <<PK>>
+  --
+  * teacher_id : BIGINT <<FK>>
+  * type : ENUM(single,multiple,judge,fill,essay)
+  * stem : TEXT
+  * options : JSON
+    answer : JSON
+  * analysis : TEXT
+  * difficulty : ENUM(easy,medium,hard)
+  * score : DECIMAL(6,1)
+  * blank_count : INT
+  * created_at / updated_at
+    deleted_at : DATETIME  (逻辑删除)
+}
+
+entity "question_tags\n题目标签" as question_tags {
+  * question_id : BIGINT <<PK,FK>>
+  * tag_id : BIGINT <<PK,FK>>
+}
+
+entity "papers\n试卷" as papers {
+  * id : BIGINT <<PK>>
+  --
+  * teacher_id : BIGINT <<FK>>
+  * title : VARCHAR(100)
+    description : VARCHAR(500)
+  * total_score : DECIMAL(7,1)
+  * question_count : INT
+  * created_at / updated_at
+}
+
+entity "paper_questions\n试卷题目快照" as paper_questions {
+  * id : BIGINT <<PK>>
+  --
+  * paper_id : BIGINT <<FK>>
+    question_id : BIGINT <<FK>>
+  * seq : INT
+  * type / stem / options / answer
+  * analysis / difficulty / tags : JSON
+  * score : DECIMAL(6,1)
+  * blank_count : INT
+  ..
+  UK(paper_id, seq)
+}
+
+entity "exams\n考试" as exams {
+  * id : BIGINT <<PK>>
+  --
+  * teacher_id : BIGINT <<FK>>
+  * paper_id : BIGINT <<FK>>
+  * title : VARCHAR(100)
+    description : VARCHAR(1000)
+  * start_time / end_time : DATETIME
+  * duration_minutes : INT
+  * pass_score : DECIMAL(7,1)
+  * shuffle_options : TINYINT(1)
+    cancelled_at : DATETIME
+  * results_published : TINYINT(1)
+    results_published_at : DATETIME
+  * allow_review : TINYINT(1)
+  * absent_generated : TINYINT(1)
+  * created_at / updated_at
+}
+
+entity "exam_classes\n参考班级" as exam_classes {
+  * exam_id : BIGINT <<PK,FK>>
+  * class_id : BIGINT <<PK,FK>>
+}
+
+entity "submissions\n答卷" as submissions {
+  * id : BIGINT <<PK>>
+  --
+  * exam_id : BIGINT <<FK>>
+  * student_id : BIGINT <<FK>>
+  * class_id : BIGINT <<FK>>
+  * status : ENUM(in_progress,pending_review,graded)
+    submit_type : ENUM(manual,auto,forced,absent)
+    started_at / deadline_at / submitted_at
+    last_saved_at : DATETIME
+    objective_score / subjective_score / total_score
+  * created_at / updated_at
+  ..
+  UK(exam_id, student_id)
+}
+
+entity "answers\n逐题作答" as answers {
+  * id : BIGINT <<PK>>
+  --
+  * submission_id : BIGINT <<FK>>
+  * paper_question_id : BIGINT <<FK>>
+    response : JSON
+    score : DECIMAL(6,1)
+    is_correct : TINYINT(1)
+    comment : VARCHAR(500)
+    graded_by : BIGINT <<FK>>
+    graded_at : DATETIME
+  * created_at / updated_at
+  ..
+  UK(submission_id, paper_question_id)
+}
+
+classes  |o--o{ users           : "学生所属\n(users.class_id)"
+users    ||--o{ sessions        : 登录
+classes  ||--o{ class_teachers  : 任课
+users    ||--o{ class_teachers  : "教师任课"
+users    ||--o{ tags            : 拥有
+users    ||--o{ questions       : 创建
+questions ||--o{ question_tags  : 关联
+tags     ||--o{ question_tags   : 标记
+users    ||--o{ papers          : 创建
+papers   ||--|{ paper_questions : 包含
+questions |o--o{ paper_questions : "快照来源"
+users    ||--o{ exams           : 发布
+papers   ||--o{ exams           : "被引用(锁定)"
+exams    ||--|{ exam_classes    : 指定
+classes  ||--o{ exam_classes    : 参考
+exams    ||--o{ submissions     : 产生
+users    ||--o{ submissions     : "学生作答"
+classes  ||--o{ submissions     : "班级快照"
+submissions ||--o{ answers      : 包含
+paper_questions ||--o{ answers  : 对应
+users    |o--o{ answers         : "批改(graded_by)"
+@enduml
