@@ -185,6 +185,8 @@ export function createAnswerService({ repos, config, svc }) {
       const r = await repos.transaction(async (tx) => {
         const { exam, sub } = await studentAccess(user, examId, tx);
         if (sub) {
+          // 缺考记录（考试结束后生成）不属于“已交卷”，按 §8.1 视为不在考试时间内
+          if (sub.submit_type === 'absent') return { err: fail('EXAM_NOT_AVAILABLE') };
           if (sub.status !== 'in_progress') return { err: fail('ALREADY_SUBMITTED', undefined, submitResult(sub, false)) };
           if (isExpired(sub, now, GRACE)) {
             const done = await finalizeTx(tx, sub, 'forced', sub.deadline_at);

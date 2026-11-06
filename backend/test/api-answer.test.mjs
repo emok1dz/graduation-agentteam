@@ -153,7 +153,7 @@ test('IT-ANS-12 考试结束后未进入的学生 start → 409（已生成缺�
   if (r.code === 40904) assert.equal(r.data.submit_type, 'absent');
 });
 
-test('IT-ANS-13 缺考学生考试结束后 start 应返回 40905“当前不在考试时间内”（设计文档 §8.1 状态表）', { todo: '缺陷 BUG-01：实际返回 40904“已交卷，请勿重复提交”' }, async () => {
+test('IT-ANS-13 缺考学生考试结束后 start 应返回 40905“当前不在考试时间内”（设计文档 §8.1 状态表）', async () => {
   clock.setNow(sc.endMs + 2000);
   h.err(await start(7), 409, 40905);
 });

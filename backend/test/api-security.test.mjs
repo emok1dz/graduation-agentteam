@@ -114,7 +114,7 @@ test('NFR-REL-01 重启后数据不丢失（stop 落盘 → 同一 DATA_DIR 重�
   }
 });
 
-test('NFR-SEC-07 CSV 导出应防公式注入（以 = + - @ 开头的单元格需前置 \' 或转义）', { todo: '缺陷 BUG-02：姓名 "=1+2" 原样写入 CSV' }, async () => {
+test('NFR-SEC-07 CSV 导出应防公式注入（以 = + - @ 开头的单元格需前置 \' 或转义）', async () => {
   const h2 = await startHarness();
   try {
     clock.setNow(Date.parse('2026-11-05T08:00:00.000Z'));
