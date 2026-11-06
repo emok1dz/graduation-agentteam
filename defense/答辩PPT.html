@@ -1,0 +1,440 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>在线考试系统答辩</title>
+<style>
+:root{
+  --ink:#0f172a; --ink2:#334155; --mute:#64748b; --line:#e2e8f0; --bg:#f8fafc;
+  --brand:#1e3a8a; --brand2:#2563eb; --accent:#0ea5e9; --ok:#16a34a; --warn:#d97706; --bad:#dc2626;
+  --card:#ffffff;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{height:100%;background:#0b1220;overflow:hidden}
+body{font-family:"PingFang SC","Microsoft YaHei","Noto Sans CJK SC","Source Han Sans SC","Helvetica Neue",Arial,sans-serif;color:var(--ink);}
+#viewport{position:fixed;inset:0;display:flex;align-items:center;justify-content:center}
+#stage{width:1600px;height:900px;position:relative;transform-origin:center center;flex:none}
+.slide{position:absolute;inset:0;background:var(--card);display:none;padding:70px 90px 80px;overflow:hidden}
+.slide.active{display:block;animation:fade .35s ease}
+@keyframes fade{from{opacity:0;transform:translateX(12px)}to{opacity:1;transform:none}}
+.slide::before{content:"";position:absolute;left:0;top:0;bottom:0;width:10px;background:linear-gradient(var(--brand),var(--brand2))}
+.foot{position:absolute;left:90px;right:90px;bottom:28px;display:flex;justify-content:space-between;font-size:18px;color:var(--mute);border-top:1px solid var(--line);padding-top:12px}
+.kicker{font-size:20px;letter-spacing:.12em;color:var(--brand2);font-weight:600;margin-bottom:10px}
+h2{font-size:48px;font-weight:700;color:var(--ink);margin-bottom:34px;line-height:1.2}
+ul.pts{list-style:none}
+ul.pts li{font-size:28px;line-height:1.5;color:var(--ink2);padding-left:34px;position:relative;margin-bottom:20px}
+ul.pts li::before{content:"";position:absolute;left:4px;top:.6em;width:12px;height:12px;border-radius:3px;background:var(--brand2)}
+ul.pts.sm li{font-size:25px;margin-bottom:16px}
+b,strong{color:var(--brand);font-weight:700}
+code{font-family:Consolas,"SFMono-Regular",Menlo,monospace;background:#eef2ff;color:var(--brand);padding:1px 8px;border-radius:6px;font-size:.88em}
+.two{display:grid;grid-template-columns:1fr 1fr;gap:50px;height:590px}
+.two.wide-img{grid-template-columns:.95fr 1.05fr}
+.shot{border:1px solid var(--line);border-radius:12px;overflow:hidden;box-shadow:0 10px 30px rgba(15,23,42,.12);background:#fff;position:relative}
+.shot img{width:100%;height:100%;object-fit:cover;object-position:top left;display:block}
+.shot .cap{position:absolute;left:0;right:0;bottom:0;background:rgba(15,23,42,.72);color:#fff;font-size:16px;padding:6px 12px}
+.shots{display:grid;gap:18px;height:590px}
+.shots.r2{grid-template-rows:1fr 1fr}
+.shots.c3{grid-template-columns:repeat(3,1fr);height:330px;margin-top:10px}
+.mobile{display:grid;grid-template-columns:1.9fr 1fr;gap:18px;height:590px}
+.cards{display:grid;grid-template-columns:repeat(4,1fr);gap:22px;margin-bottom:34px}
+.card{background:var(--bg);border:1px solid var(--line);border-radius:14px;padding:22px 24px}
+.card .n{font-size:46px;font-weight:800;color:var(--brand);line-height:1.1}
+.card .n.ok{color:var(--ok)}
+.card .l{font-size:19px;color:var(--mute);margin-top:6px}
+table.t{width:100%;border-collapse:collapse;font-size:23px}
+table.t th{background:var(--brand);color:#fff;text-align:left;padding:12px 16px;font-weight:600}
+table.t td{padding:11px 16px;border-bottom:1px solid var(--line);color:var(--ink2)}
+table.t tr:nth-child(even) td{background:var(--bg)}
+.pass{color:var(--ok);font-weight:700}
+.layers{display:flex;flex-direction:column;gap:10px}
+.layer{display:grid;grid-template-columns:200px 1fr;align-items:center;border-radius:10px;overflow:hidden;border:1px solid var(--line)}
+.layer span:first-child{background:var(--brand);color:#fff;font-weight:700;font-size:21px;padding:13px 16px;height:100%;display:flex;align-items:center}
+.layer span:last-child{font-size:20px;padding:10px 16px;color:var(--ink2);background:var(--bg)}
+.flow{display:flex;align-items:stretch;gap:12px;margin:8px 0 34px}
+.flow div{flex:1;background:var(--bg);border:2px solid var(--brand2);border-radius:12px;padding:16px 10px;text-align:center;font-size:21px;font-weight:600;color:var(--brand);position:relative}
+.flow div small{display:block;font-weight:400;font-size:16px;color:var(--mute);margin-top:6px}
+.flow div:not(:last-child)::after{content:"▶";position:absolute;right:-13px;top:50%;transform:translateY(-50%);color:var(--brand2);font-size:14px}
+.cover{background:linear-gradient(135deg,#0f1f4d 0%,#1e3a8a 55%,#2563eb 100%);color:#fff;padding:0}
+.cover::before{display:none}
+.cover .inner{position:absolute;left:120px;right:120px;top:210px}
+.cover .tag{display:inline-block;border:1px solid rgba(255,255,255,.5);border-radius:30px;padding:6px 20px;font-size:22px;letter-spacing:.1em;margin-bottom:34px}
+.cover h1{font-size:68px;line-height:1.25;font-weight:800;margin-bottom:26px}
+.cover .sub{font-size:28px;opacity:.85;margin-bottom:70px}
+.cover .meta{display:grid;grid-template-columns:repeat(2,auto);justify-content:start;gap:12px 70px;font-size:26px;opacity:.95}
+.cover .foot,.end .foot{color:rgba(255,255,255,.65);border-top-color:rgba(255,255,255,.2)}
+.end{background:linear-gradient(135deg,#0f1f4d,#1e3a8a);color:#fff;text-align:center}
+.end::before{display:none}
+.end h2{color:#fff;font-size:76px;margin-top:230px}
+.end p{font-size:30px;opacity:.85;margin-top:10px}
+.note{font-size:20px;color:var(--mute);margin-top:6px}
+.badge{display:inline-block;background:#dcfce7;color:var(--ok);font-weight:700;padding:2px 12px;border-radius:20px;font-size:.85em}
+#bar{position:fixed;left:0;bottom:0;height:4px;background:var(--accent);transition:width .3s;z-index:9}
+#hint{position:fixed;right:16px;bottom:12px;color:#94a3b8;font-size:13px;z-index:9;opacity:.7;font-family:sans-serif}
+@media print{
+  html,body{overflow:visible;background:#fff}
+  #viewport{position:static;display:block}
+  #stage{transform:none!important}
+  .slide{display:block!important;position:relative;page-break-after:always}
+  #bar,#hint{display:none}
+}
+</style>
+</head>
+<body>
+<div id="viewport"><div id="stage">
+
+<!-- 1 封面 -->
+<section class="slide cover">
+  <div class="inner">
+    <div class="tag">本科毕业设计答辩</div>
+    <h1>基于 Node.js 的<br>在线考试系统的设计与实现</h1>
+    <div class="sub">零依赖 · 全栈 Web · 题库—组卷—考试—阅卷—统计全流程</div>
+    <div class="meta">
+      <div>答辩人：＿＿＿＿</div><div>学号：＿＿＿＿</div>
+      <div>专业班级：＿＿＿＿</div><div>指导教师：＿＿＿＿</div>
+    </div>
+  </div>
+  <div class="foot"><span>在线考试系统</span><span>1 / 18</span></div>
+</section>
+
+<!-- 2 背景 -->
+<section class="slide">
+  <div class="kicker">01 · 研究背景</div>
+  <h2>研究背景与意义</h2>
+  <ul class="pts">
+    <li><b>流程长</b>：纸质考试命题、印刷、监考、阅卷、登分全靠手工</li>
+    <li><b>组卷效率低</b>：题目无法按题型 / 难度 / 知识点复用和抽取</li>
+    <li><b>阅卷工作量大</b>：客观题逐份人工核对，容易出错</li>
+    <li><b>统计分析薄弱</b>：平均分、及格率、每题正确率难以及时反馈教学</li>
+    <li><b>研究意义</b>：将“题库—组卷—考试—阅卷—统计”全流程搬到浏览器，降低教师工作量</li>
+  </ul>
+  <div class="foot"><span>研究背景与意义</span><span>2 / 18</span></div>
+</section>
+
+<!-- 3 目标与需求 -->
+<section class="slide">
+  <div class="kicker">01 · 研究目标</div>
+  <h2>研究目标与需求概览</h2>
+  <div class="cards">
+    <div class="card"><div class="n">3</div><div class="l">系统角色：管理员 / 教师 / 学生</div></div>
+    <div class="card"><div class="n">33</div><div class="l">功能需求（FR）</div></div>
+    <div class="card"><div class="n">15</div><div class="l">非功能需求（NFR）</div></div>
+    <div class="card"><div class="n">5</div><div class="l">题型：单选 多选 判断 填空 简答</div></div>
+  </div>
+  <ul class="pts sm">
+    <li>每条需求唯一编号，进入<b>需求追踪矩阵</b>：需求 → 设计 → 接口 → 测试</li>
+    <li>约束：服务端<b>零第三方依赖</b>、前端原生 JS、JSON 文件存储、单进程部署</li>
+    <li>非功能重点：响应时间、200 人并发作答、密码与令牌安全、越权、防重复交卷、XSS</li>
+  </ul>
+  <div class="foot"><span>研究目标与需求概览</span><span>3 / 18</span></div>
+</section>
+
+<!-- 4 技术选型 -->
+<section class="slide">
+  <div class="kicker">02 · 技术选型</div>
+  <h2>技术选型：零依赖 Node.js</h2>
+  <table class="t">
+    <tr><th style="width:18%">层面</th><th style="width:36%">选型</th><th>理由</th></tr>
+    <tr><td>运行时</td><td>Node.js ≥ 18，ES Module</td><td>内置 http / crypto / fs / test，覆盖全部需要</td></tr>
+    <tr><td>第三方依赖</td><td><b>零依赖</b></td><td>无需 npm install，<code>npm start</code> 一条命令启动；无供应链风险</td></tr>
+    <tr><td>Web 框架</td><td>自研轻量路由（约 100 行）</td><td>方法 + 路径参数 + 角色声明即可，关键代码可自主讲解</td></tr>
+    <tr><td>存储</td><td>JSON 文件 + 仓储层</td><td>需求规模可全量驻留内存；预留 MySQL 8 DDL 与迁移方案</td></tr>
+    <tr><td>鉴权</td><td>scrypt + 服务端会话</td><td>慢哈希抗爆破；会话可即时吊销（JWT 做不到）</td></tr>
+    <tr><td>前端</td><td>原生 JS SPA + hash 路由</td><td>无构建、无框架、无 CDN；首屏可控</td></tr>
+    <tr><td>测试</td><td><code>node --test</code> + 覆盖率</td><td>内置能力，零依赖</td></tr>
+  </table>
+  <div class="foot"><span>技术选型</span><span>4 / 18</span></div>
+</section>
+
+<!-- 5 架构 -->
+<section class="slide">
+  <div class="kicker">02 · 系统设计</div>
+  <h2>系统总体架构</h2>
+  <div class="two" style="grid-template-columns:1.15fr .85fr;height:auto">
+    <div class="layers">
+      <div class="layer"><span>浏览器 SPA</span><span>原生 JS · hash 路由 · 26 个页面 · HTTP JSON /api/*</span></div>
+      <div class="layer"><span>接入层</span><span>安全响应头 · 静态文件 / API 分发 · 请求体 ≤1MB · 统一信封</span></div>
+      <div class="layer"><span>路由层</span><span>62 条路由，每条声明允许的角色</span></div>
+      <div class="layer"><span>鉴权中间件</span><span>Bearer 令牌 → 会话 → 用户 · 滑动续期 · RBAC</span></div>
+      <div class="layer"><span>控制器</span><span>取参 · 校验 · 调用服务</span></div>
+      <div class="layer"><span>服务层 + domain</span><span>业务规则 · 归属校验 · 事务边界 · 判分 / 统计纯函数</span></div>
+      <div class="layer"><span>仓储层</span><span>统一异步接口，返回深拷贝</span></div>
+      <div class="layer"><span>存储</span><span>json-store：互斥事务 · 回滚 · 合并写 · 原子落盘</span></div>
+    </div>
+    <ul class="pts sm">
+      <li>B/S 架构，前后端<b>同端口</b>部署</li>
+      <li>服务层<b>不感知 HTTP、不访问文件系统</b></li>
+      <li>domain 层为无副作用纯函数，便于单元测试</li>
+      <li>统一响应 <code>{code, message, data}</code> + 业务错误码</li>
+    </ul>
+  </div>
+  <div class="foot"><span>系统总体架构（详见 design/架构图.puml）</span><span>5 / 18</span></div>
+</section>
+
+<!-- 6 数据设计 -->
+<section class="slide">
+  <div class="kicker">02 · 数据设计</div>
+  <h2>数据设计与可替换存储</h2>
+  <ul class="pts">
+    <li>ER 图 <b>13 个实体</b>：用户、会话、班级、任课关系、标签、题目、题目标签、试卷、试卷题目快照、考试、参考班级、答卷、逐题作答</li>
+    <li>单文件 <code>db.json</code> 全量驻留内存，查询为内存遍历</li>
+    <li><b>原子落盘</b>：写 <code>.tmp</code> → <code>fsync</code> → <code>rename</code>；文件损坏则拒绝启动，保护原数据</li>
+    <li><b>可替换</b>：仓储接口统一，迁移 MySQL 只需新增实现并修改 <code>STORAGE</code> 配置，DDL 已给出</li>
+    <li>试卷题目保存<b>快照</b>：题目修改不影响已发布考试</li>
+  </ul>
+  <div class="foot"><span>数据设计（详见 design/ER图.puml、design/database/ddl.sql）</span><span>6 / 18</span></div>
+</section>
+
+<!-- 7 模块总览 -->
+<section class="slide">
+  <div class="kicker">03 · 系统实现</div>
+  <h2>功能模块总览</h2>
+  <div class="flow">
+    <div>建题<small>五种题型</small></div><div>组卷<small>手动 / 随机</small></div><div>发布<small>班级 · 时间窗</small></div>
+    <div>作答<small>倒计时 · 自动保存</small></div><div>交卷<small>手动 / 自动</small></div><div>阅卷<small>自动 + 人工</small></div><div>统计<small>发布 · 分析</small></div>
+  </div>
+  <ul class="pts sm" style="margin-bottom:14px">
+    <li><b>9 个模块</b> · 后端 <b>62/62</b> 接口（含 10 个可选）· 前端 <b>26</b> 个页面、<b>28</b> 条路由</li>
+  </ul>
+  <div class="shots c3">
+    <div class="shot"><img src="../docs/screenshots/admin-home.png" alt="管理员概览"><div class="cap">管理员 · 系统概览</div></div>
+    <div class="shot"><img src="../docs/screenshots/teacher-home.png" alt="教师题库"><div class="cap">教师 · 题库管理</div></div>
+    <div class="shot"><img src="../docs/screenshots/student-home.png" alt="学生考试"><div class="cap">学生 · 我的考试</div></div>
+  </div>
+  <div class="foot"><span>功能模块总览</span><span>7 / 18</span></div>
+</section>
+
+<!-- 8 题库组卷 -->
+<section class="slide">
+  <div class="kicker">03 · 系统实现</div>
+  <h2>题库管理与组卷</h2>
+  <div class="two">
+    <ul class="pts sm">
+      <li>五种题型统一编辑，支持<b>难度</b>、<b>知识点标签</b>、填空多个可接受答案</li>
+      <li><b>手动组卷</b>：筛选 + 勾选，按题型顺序稳定排序</li>
+      <li><b>随机组卷</b>：按“题型 × 数量 × 难度 × 标签”规则，Fisher–Yates 洗牌抽题</li>
+      <li>题量不足时<b>一次性列出全部缺口</b>，支持单题替换</li>
+    </ul>
+    <div class="shots r2">
+      <div class="shot"><img src="../docs/screenshots/flow-teacher-question-new.png" alt="新增题目"><div class="cap">新增题目</div></div>
+      <div class="shot"><img src="../docs/screenshots/flow-teacher-paper-edit.png" alt="组卷"><div class="cap">组卷</div></div>
+    </div>
+  </div>
+  <div class="foot"><span>题库管理与组卷</span><span>8 / 18</span></div>
+</section>
+
+<!-- 9 答题 -->
+<section class="slide">
+  <div class="kicker">03 · 系统实现</div>
+  <h2>在线答题：倒计时 · 自动保存 · 断点恢复</h2>
+  <div class="two wide-img">
+    <ul class="pts sm">
+      <li>倒计时以<b>服务端时间</b>为准，修改本机时钟无效</li>
+      <li>截止时刻 = min(开始 + 时长, 考试结束时间)</li>
+      <li>选择题<b>即时保存</b>，文本 2s 防抖，30s 兜底保存</li>
+      <li>保存失败指数退避重试，答案暂存本地草稿</li>
+      <li>刷新 / 断网后恢复答案，剩余时间连续计算；375px 手机可作答</li>
+    </ul>
+    <div class="mobile">
+      <div class="shot"><img src="../docs/screenshots/flow-student-take-desktop.png" alt="桌面端答题"><div class="cap">桌面端答题</div></div>
+      <div class="shot"><img src="../docs/screenshots/flow-student-take-offline-mobile.png" alt="手机端断网"><div class="cap">手机 · 断网提示</div></div>
+    </div>
+  </div>
+  <div class="foot"><span>在线答题</span><span>9 / 18</span></div>
+</section>
+
+<!-- 10 一致性 -->
+<section class="slide">
+  <div class="kicker">03 · 关键技术</div>
+  <h2>交卷一致性：幂等 · 并发 · 强制交卷</h2>
+  <div class="two">
+    <ul class="pts sm">
+      <li><b>全局事务互斥锁</b>：读-校验-写在同一事务内串行，出错回滚</li>
+      <li><b>交卷幂等</b>：非“作答中”一律返回 40904 + 原结果，交卷时间不变</li>
+      <li>测试：同一答卷 <b>10 次并发交卷仅 1 次成功</b>，库内仅 1 条答卷</li>
+      <li>截止 <b>+10s 宽限</b>后保存 / 交卷不再接受新答案</li>
+      <li><b>兜底调度</b>每 30s：超时答卷强制交卷并阅卷；考试结束生成缺考记录</li>
+    </ul>
+    <div class="shot"><img src="../docs/screenshots/flow-student-done.png" alt="交卷完成"><div class="cap">学生交卷完成</div></div>
+  </div>
+  <div class="foot"><span>交卷一致性</span><span>10 / 18</span></div>
+</section>
+
+<!-- 11 阅卷 -->
+<section class="slide">
+  <div class="kicker">03 · 关键技术</div>
+  <h2>自动阅卷与人工批改</h2>
+  <div class="two">
+    <div>
+      <table class="t" style="font-size:21px">
+        <tr><th style="width:22%">题型</th><th>判分规则</th></tr>
+        <tr><td>单选 / 判断</td><td>与答案一致得满分</td></tr>
+        <tr><td>多选</td><td><b>完全一致</b>才得满分；少选、多选、错选均 0 分</td></tr>
+        <tr><td>填空</td><td>逐空比对，去首尾空格、忽略大小写；分值按空拆分，合计恒等于总分</td></tr>
+        <tr><td>简答</td><td>教师按人 / 按题人工给分并写评语</td></tr>
+      </table>
+      <p class="note" style="margin-top:20px">全部批改完成且考试结束后才能发布成绩；发布后可撤回。</p>
+    </div>
+    <div class="shot"><img src="../docs/screenshots/flow-teacher-grading.png" alt="人工批改"><div class="cap">教师批改</div></div>
+  </div>
+  <div class="foot"><span>自动阅卷与人工批改</span><span>11 / 18</span></div>
+</section>
+
+<!-- 12 统计 -->
+<section class="slide">
+  <div class="kicker">03 · 系统实现</div>
+  <h2>成绩统计与分析</h2>
+  <div class="two">
+    <ul class="pts sm">
+      <li><b>概要</b>：应考 / 实考 / 缺考、平均分、最高 / 最低分、及格率</li>
+      <li><b>分数段分布</b>：原生 SVG 柱状图，无图表库</li>
+      <li><b>每题正确率 / 得分率</b>与选项分布，定位薄弱知识点</li>
+      <li>成绩单排名与 <b>CSV 导出</b></li>
+      <li>测试中统计结果与<b>手算结果逐项一致</b></li>
+    </ul>
+    <div class="shot"><img src="../docs/screenshots/teacher_exams_1_scores.png" alt="成绩统计"><div class="cap">成绩与统计</div></div>
+  </div>
+  <div class="foot"><span>成绩统计与分析</span><span>12 / 18</span></div>
+</section>
+
+<!-- 13 安全 -->
+<section class="slide">
+  <div class="kicker">04 · 安全设计</div>
+  <h2>安全设计</h2>
+  <table class="t">
+    <tr><th style="width:20%">威胁</th><th>措施</th></tr>
+    <tr><td>密码泄露 / 爆破</td><td>scrypt 慢哈希 + 16 字节独立盐 + 常量时间比较；5 次错误锁定 10 分钟</td></tr>
+    <tr><td>令牌窃取 / 伪造</td><td>32 字节随机令牌，库内仅存 SHA-256；空闲 2h 过期；退出 / 改密 / 禁用立即失效</td></tr>
+    <tr><td>越权</td><td>路由 RBAC（40300）+ 服务层资源归属校验（40301）两级</td></tr>
+    <tr><td>答案泄露</td><td>学生作答接口白名单字段，不含答案解析；成绩发布前分数为空</td></tr>
+    <tr><td>XSS</td><td>前端只用 textContent 渲染 + 严格 CSP（default-src 'self'）</td></tr>
+    <tr><td>其他注入</td><td>字段级输入校验、请求体 ≤1MB、静态文件防路径穿越、CSV 导出防公式注入</td></tr>
+  </table>
+  <div class="foot"><span>安全设计</span><span>13 / 18</span></div>
+</section>
+
+<!-- 14 测试 -->
+<section class="slide">
+  <div class="kicker">05 · 测试</div>
+  <h2>测试与质量保证</h2>
+  <div class="cards">
+    <div class="card"><div class="n">142</div><div class="l">用例总数（后端 134 + E2E 8）</div></div>
+    <div class="card"><div class="n ok">0</div><div class="l">失败用例</div></div>
+    <div class="card"><div class="n">96.70%</div><div class="l">行覆盖率</div></div>
+    <div class="card"><div class="n">87.70%</div><div class="l">分支覆盖率（函数 95.02%）</div></div>
+  </div>
+  <ul class="pts sm">
+    <li>分层：domain 单元测试穷举边界；接口用真实 HTTP 黑盒测试；E2E 用 Playwright 走通全流程</li>
+    <li><b>假时钟</b>精确模拟开考、截止宽限（+10000ms 有效 / +10001ms 过期）、锁定到期</li>
+    <li>每个测试文件独立进程、独立临时数据目录，互不干扰</li>
+    <li>测试发现 <b>2 个低严重度缺陷</b>，<span class="badge">已修复并回归通过</span></li>
+  </ul>
+  <div class="foot"><span>测试与质量保证（数据见 docs/test-report.md）</span><span>14 / 18</span></div>
+</section>
+
+<!-- 15 性能 -->
+<section class="slide">
+  <div class="kicker">05 · 测试</div>
+  <h2>性能测试结果</h2>
+  <p class="note" style="font-size:22px;margin:-14px 0 20px">数据规模：1000 用户 · 2000 题 · 102 场考试 · 5000 答卷 · 25000 条作答</p>
+  <table class="t">
+    <tr><th>指标</th><th>要求</th><th>实测</th><th style="width:12%">结论</th></tr>
+    <tr><td>普通查询平均响应</td><td>≤ 300ms</td><td>1.7 ~ 12.3ms</td><td class="pass">通过</td></tr>
+    <tr><td>统计接口平均响应</td><td>≤ 1s</td><td>2.3 ~ 3.5ms</td><td class="pass">通过</td></tr>
+    <tr><td>200 并发保存 / 交卷</td><td>成功率 100%、无丢失</td><td>100%，逐份核对一致；P95 1240.1 / 1358.4ms</td><td class="pass">通过</td></tr>
+    <tr><td>100 并发登录</td><td>记录 P95</td><td>全部成功，P95 1223.3ms（scrypt 慢哈希代价）</td><td>记录</td></tr>
+    <tr><td>首屏资源 / 可交互</td><td>≤ 300KB / ≤ 2s</td><td>75.6KB / 134ms</td><td class="pass">通过</td></tr>
+  </table>
+  <div class="foot"><span>性能测试结果</span><span>15 / 18</span></div>
+</section>
+
+<!-- 16 Agent Team -->
+<section class="slide">
+  <div class="kicker">06 · 开发方法</div>
+  <h2>AI 智能体团队协作开发</h2>
+  <div class="flow">
+    <div>需求分析师<small>FR 33 · NFR 15</small></div><div>系统架构师<small>OpenAPI 62 接口</small></div>
+    <div>前 / 后端开发<small>代码实现</small></div><div>测试工程师<small>142 条用例</small></div><div>论文 / 答辩<small>整合交付</small></div>
+  </div>
+  <ul class="pts sm">
+    <li>组长拆解任务、组建 8 个角色，<b>每阶段验收</b>后再进入下一阶段</li>
+    <li><b>契约驱动</b>：需求规格 → API 契约 → 代码 → 测试报告，契约是前后端唯一依据</li>
+    <li>各角色只写自己的目录，测试发现缺陷<b>退回开发修复并回归</b>，形成质量闭环</li>
+    <li><b>人工把关</b>：定题与技术约束、阶段验收决策、核对测试数据、理解并讲解核心代码</li>
+  </ul>
+  <div class="foot"><span>AI 智能体团队协作（见 team/README.md、team/log.md）</span><span>16 / 18</span></div>
+</section>
+
+<!-- 17 总结 -->
+<section class="slide">
+  <div class="kicker">07 · 总结</div>
+  <h2>总结、不足与展望</h2>
+  <div class="two" style="height:auto">
+    <div>
+      <p style="font-size:26px;font-weight:700;color:var(--ok);margin-bottom:16px">已完成</p>
+      <ul class="pts sm">
+        <li>33 条功能需求、62 个接口、26 个页面的完整考试闭环</li>
+        <li>零依赖一键启动，安全、一致性、性能均有测试验证</li>
+        <li>142 条自动化用例，行覆盖率 96.70%</li>
+      </ul>
+    </div>
+    <div>
+      <p style="font-size:26px;font-weight:700;color:var(--warn);margin-bottom:16px">不足与展望</p>
+      <ul class="pts sm">
+        <li>JSON 整文件落盘，写延迟随数据量增长 → 迁移 MySQL / 增量持久化</li>
+        <li>单进程无法水平扩展 → 会话外置、多实例部署</li>
+        <li>无切屏检测等防作弊；仅在 Node 22 + Chromium 下验证</li>
+        <li>扩展题目图片、编程题判题、HTTPS 部署</li>
+      </ul>
+    </div>
+  </div>
+  <div class="foot"><span>总结、不足与展望</span><span>17 / 18</span></div>
+</section>
+
+<!-- 18 致谢 -->
+<section class="slide end">
+  <h2>谢谢各位老师</h2>
+  <p>恳请批评指正 · 接下来进行约 5 分钟系统演示</p>
+  <div class="foot"><span>在线考试系统</span><span>18 / 18</span></div>
+</section>
+
+</div></div>
+<div id="bar"></div>
+<div id="hint">← → 翻页 · F 全屏</div>
+<script>
+(function(){
+  var slides=[].slice.call(document.querySelectorAll('.slide'));
+  var stage=document.getElementById('stage'), bar=document.getElementById('bar');
+  var i=0;
+  var m=/#(\d+)/.exec(location.hash); if(m){i=Math.min(Math.max(+m[1]-1,0),slides.length-1);}
+  function show(n){
+    i=Math.min(Math.max(n,0),slides.length-1);
+    slides.forEach(function(s,k){s.classList.toggle('active',k===i);});
+    bar.style.width=((i+1)/slides.length*100)+'%';
+    history.replaceState(null,'','#'+(i+1));
+  }
+  function fit(){
+    var s=Math.min(window.innerWidth/1600,window.innerHeight/900);
+    stage.style.transform='scale('+s+')';
+  }
+  function fs(){
+    if(!document.fullscreenElement){document.documentElement.requestFullscreen&&document.documentElement.requestFullscreen();}
+    else{document.exitFullscreen&&document.exitFullscreen();}
+  }
+  document.addEventListener('keydown',function(e){
+    var k=e.key;
+    if(k==='ArrowRight'||k==='ArrowDown'||k==='PageDown'||k===' '||k==='Enter'){e.preventDefault();show(i+1);}
+    else if(k==='ArrowLeft'||k==='ArrowUp'||k==='PageUp'||k==='Backspace'){e.preventDefault();show(i-1);}
+    else if(k==='Home'){show(0);}
+    else if(k==='End'){show(slides.length-1);}
+    else if(k==='f'||k==='F'){fs();}
+  });
+  document.addEventListener('click',function(e){
+    if(e.clientX<window.innerWidth/3){show(i-1);}else{show(i+1);}
+  });
+  window.addEventListener('resize',fit);
+  fit(); show(i);
+})();
+</script>
+</body>
+</html>
